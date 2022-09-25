@@ -19,23 +19,17 @@ class FantasticBits:
         self.agents: list[Wizard] = []
         self.opponents: list[Wizard] = []
 
-        self.observation_spaces = {
-            agent_id: gym.spaces.Dict(
-                {
-                    "global": gym.spaces.Box(0, 1, shape=(3,)),
-                    "entities": gym.spaces.Sequence(gym.spaces.Box(0, 1, shape=(9,))),
-                }
-            )
-            for agent_id in ("wizard_0", "wizard_1")
+        self.observation_space = {
+            "global_0": gym.spaces.Box(0, 1, shape=(3,)),
+            "entities_0": gym.spaces.Sequence(gym.spaces.Box(0, 1, shape=(9,))),
+            "global_1": gym.spaces.Box(0, 1, shape=(3,)),
+            "entities_1": gym.spaces.Sequence(gym.spaces.Box(0, 1, shape=(9,))),
         }
         self.action_spaces = {
-            agent_id: gym.spaces.Dict(
-                {
-                    "move": gym.spaces.Box(-1, 1, shape=(2,)),
-                    "throw": gym.spaces.Box(-1, 1, shape=(2,)),
-                }
-            )
-            for agent_id in ("wizard_0", "wizard_1")
+            "id_0": gym.spaces.Box(0, 1, dtype=int),
+            "target_0": gym.spaces.Box(-1, 1, shape=(2,)),
+            "id_1": gym.spaces.Box(0, 1, dtype=int),
+            "target_1": gym.spaces.Box(-1, 1, shape=(2,)),
         }
 
     def get_obs(self):

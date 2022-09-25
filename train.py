@@ -11,20 +11,11 @@ from torch.nn.utils.rnn import pad_sequence
 from env import FantasticBits
 
 
-def stack_dicts(obj: list[dict]):
-    if len(obj) == 0:
-        return {}
-    ret = {}
-    for k in obj[0].keys():
-        if isinstance(obj[0][k], dict):
-            ret[k] = stack_dicts([entry[k] for entry in obj])
-        elif isinstance(obj[0][k], torch.Tensor):
-            ret[k] = torch.stack([entry[k] for entry in obj], dim=0)
-        elif isinstance(obj[0][k], list):
-            ret[k] = [entry[k] for entry in obj]
-        else:
-            ret[k] = np.stack([entry[k] for entry in obj], axis=0)
-    return ret
+class Rollout:
+    def __init__(
+        self,
+        
+    ):
 
 
 def deep_idx(obj, idx, copy=False):
@@ -185,10 +176,10 @@ class MARLTrainer:
                 "global": agent_obs["global"],
                 "masks": torch.stack(
                     [
-                        torch.cat(
+                        torch.cat([
                             torch.ones(len(entry), dtype=torch.uint8),
                             torch.zeros(max_len - len(entry), dtype=torch.uint8),
-                        )
+                        ])
                         for entry in agent_obs["entities"]
                     ],
                     dim=0,
