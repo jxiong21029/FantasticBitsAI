@@ -39,9 +39,17 @@ class FantasticBits:
         }
 
     def get_obs(self):
+        # TODO: include grab cooldowns, throwable
         ret = {}
         for i in range(2):
-            global_obs = np.array([self.t / 200, self.score[0] / 7, self.score[1] / 7])
+            global_obs = np.array(
+                [
+                    self.t / 200,
+                    self.score[0] / 7,
+                    self.score[1] / 7,
+                    1 if self.agents[i].grab_cd == 2 else 0,
+                ]
+            )
             entity_obs = [
                 np.array(
                     [
