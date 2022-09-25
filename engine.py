@@ -1,14 +1,24 @@
 import math
+import warnings
 from dataclasses import dataclass
+from enum import Enum
 
 # collision handling logic adapted from
 # github.com/dreignier/fantastic-bits/blob/master/fantastic-bits.cpp
 
 
-@dataclass
+class Boundary(Enum):
+    LEFT = 1
+    TOP = 2
+    RIGHT = 3
+    BOTTOM = 4
+    GOAL = 5
+
+
 class Point:
-    x: float
-    y: float
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
 
     def distance2(self, other: "Point"):
         return (self.x - other.x) * (self.x - other.x) + (self.y - other.y) * (
@@ -36,13 +46,14 @@ class Point:
         return Point(cx, cy)
 
 
-@dataclass
 class Entity(Point):
-    vx: float
-    vy: float
-    rad: float
-    mass: float
-    friction: float
+    def __init__(self, x, y, vx, vy, rad, mass, friction):
+        Point.__init__(self, x, y)
+        self.vx = vx
+        self.vy = vy
+        self.rad = rad
+        self.mass = mass
+        self.friction = friction
 
     def move(self, t):
         self.x += self.vx * t
@@ -54,7 +65,25 @@ class Entity(Point):
         self.vx = round(self.vx * self.friction)
         self.vy = round(self.vy * self.friction)
 
-    def collision(self, other: "Entity"):
+    def map_collisions(self):
+        for pole in POLES:
+            if col := self.collision(pole):
+                yield col
+                break
+
+        endx = self.x + self.vx
+        endy = self.y + self.vy
+        if endx < self.rad:
+            yield Collision(self, Boundary.LEFT, (self.rad - self.x) / self.vx)
+        elif endx > 16000 - self.rad:
+            yield Collision(self, Boundary.RIGHT, (16000 - self.rad - self.x) / self.vx)
+
+        if endy < self.rad:
+            yield Collision(self, Boundary.TOP, (self.rad - self.y) / self.vy)
+        elif endy > 7500 - self.rad:
+            yield Collision(self, Boundary.BOTTOM, (7500 - self.rad - self.y) / self.vy)
+
+    def collision(self, other):
         # Sum of the radii squared
         sr = (self.rad + other.rad) * (self.rad + other.rad)
 
@@ -110,10 +139,22 @@ class Entity(Point):
             return Collision(self, other, t)
 
     def bounce(self, other):
+        if isinstance(other, Boundary):
+            if self.x <= self.rad:
+                self.vx = abs(self.vx)
+            elif self.x >= 16000 - self.rad:
+                self.vx = -abs(self.vx)
+
+            if self.y <= self.rad:
+                self.vy = abs(self.vy)
+            elif self.y >= 7500 - self.rad:
+                self.vy = -abs(self.vy)
+            return
+
         m1 = self.mass
         m2 = other.mass
 
-        mcoeff = (m1 + m2) / (m1 * m2) if m1 is not None and m2 is not None else 1
+        mcoeff = (m1 + m2) / (m1 * m2)
 
         nx = self.x - other.x
         ny = self.y - other.y
@@ -151,6 +192,159 @@ class Entity(Point):
             other.vy += fy / m2
 
 
+class Wizard(Entity):
+    def __init__(self, x, y, vx=0, vy=0, rad=400, mass=1, friction=0.75, grab_cd=0):
+        super().__init__(x, y, vx, vy, rad, mass, friction)
+        self.grab_cd = grab_cd
+
+    def thrust(self, x, y, power=150):
+        dx = x - self.x
+        dy = y - self.y
+
+        norm = math.sqrt(dx * dx + dy * dy)
+        if norm == 0:
+            return
+        dx /= norm
+        dy /= norm
+
+        self.vx += dx * power / self.mass
+        self.vy += dy * power / self.mass
+
+    def collision(self, other):
+        if isinstance(other, Snaffle):
+            if self.grab_cd > 0:
+                return None
+            old_rad = other.rad
+            try:
+                other.rad = 0
+                return super().collision(other)
+            finally:
+                other.rad = old_rad
+        return super().collision(other)
+
+    def bounce(self, other):
+        if isinstance(other, (Snaffle, Bludger)):
+            other.bounce(self)
+        else:
+            super().bounce(other)
+
+    def end(self):
+        if self.grab_cd > 0:
+            self.grab_cd -= 1
+        super().end()
+
+
+class Snaffle(Entity):
+    def __init__(
+        self, x, y, vx=0, vy=0, rad=150, mass=0.5, friction=0.75, grabbed=False
+    ):
+        super().__init__(x, y, vx, vy, rad, mass, friction)
+        self.grabbed = grabbed
+
+    def yeet(self, x, y, power=500):
+        dx = x - self.x
+        dy = y - self.y
+
+        norm = math.sqrt(dx * dx + dy * dy)
+        if norm == 0:
+            return
+        dx /= norm
+        dy /= norm
+
+        self.vx += dx * power / self.mass
+        self.vy += dy * power / self.mass
+
+    def map_collisions(self):
+        endx = self.x + self.vx
+        endy = self.y + self.vy
+        for pole in POLES:
+            if col := self.collision(pole):
+                yield col
+                break
+        else:
+            if endx < 0 and (1500 <= endy <= 6000):
+                yield Collision(self, Boundary.GOAL, self.x / self.vx)
+                return
+            elif endx > 16000 and (1500 <= endy <= 6000):
+                yield Collision(self, Boundary.GOAL, (16000 - self.x) / self.vx)
+                return
+
+        if endx < self.rad and not (1500 <= endy <= 6000):
+            yield Collision(self, Boundary.LEFT, (self.rad - self.x) / self.vx)
+        elif endx > 16000 - self.rad and not (1500 <= endy <= 6000):
+            yield Collision(self, Boundary.RIGHT, (16000 - self.rad - self.x) / self.vx)
+
+        if endy < self.rad:
+            yield Collision(self, Boundary.TOP, (self.rad - self.y) / self.vy)
+        elif endy > 7500 - self.rad:
+            yield Collision(self, Boundary.BOTTOM, (7500 - self.rad - self.y) / self.vy)
+
+    def collision(self, other):
+        if isinstance(other, Wizard):
+            return other.collision(self)
+        return super().collision(other)
+
+    def bounce(self, other):
+        if isinstance(other, Wizard):
+            if self.collision(other):
+                self.grabbed = 1
+                other.grab_cd = 3
+
+                self.x = other.x
+                self.y = other.y
+                self.vx = other.vx
+                self.vy = other.vy
+
+        else:
+            super().bounce(other)
+
+    def end(self):
+        if self.grabbed == 2:
+            self.grabbed = 0
+        else:
+            self.grabbed += 1
+        super().end()
+
+
+class Bludger(Entity):
+    def __init__(
+        self, x, y, vx=0, vy=0, rad=200, mass=8, friction=0.9, last_target=None
+    ):
+        super().__init__(x, y, vx, vy, rad, mass, friction)
+        self.last_target = last_target
+        self.current_target = None
+
+    def bludge(self, all_wizards: list[Wizard]):
+        self.current_target = min(
+            [wizard for wizard in all_wizards if wizard is not self.last_target],
+            key=lambda w: self.distance2(w),
+        )
+        dx = self.current_target.x - self.x
+        dy = self.current_target.y - self.y
+
+        norm = math.sqrt(dx * dx + dy * dy)
+        if norm == 0:
+            return
+        dx /= norm
+        dy /= norm
+
+        self.vx += dx * 1000 / self.mass
+        self.vy += dy * 1000 / self.mass
+
+    def bounce(self, other):
+        if isinstance(other, Wizard):
+            self.last_target = other
+        super().bounce(other)
+
+
+POLES = [
+    Entity(0, 1750, 0, 0, 300, 99999, 0),
+    Entity(0, 5750, 0, 0, 300, 99999, 0),
+    Entity(16000, 1750, 0, 0, 300, 99999, 0),
+    Entity(16000, 5750, 0, 0, 300, 99999, 0),
+]
+
+
 @dataclass
 class Collision:
     a: Entity
@@ -158,18 +352,29 @@ class Collision:
     t: float
 
 
-def play(entities):
+def engine_step(entities):
+    scored_goals = []
+
     # This tracks the time during the turn. The goal is to reach 1.0
     t = 0.0
+    _iters = 0
 
     while t < 1.0:
+        _iters += 1
+        if _iters >= 999:
+            warnings.warn("collisions broke")
+            break
         first_col = None
 
         # We look for all the collisions that are going to occur during the turn
-        for i in range(len(entities)):
+        for i, entity in enumerate(entities):
+            for col in entity.map_collisions():
+                if col.t + t < 1.0 and (first_col is None or col.t < first_col.t):
+                    first_col = col
+
             # Collision with another pod?
             for j in range(i + 1, len(entities)):
-                col = entities[i].collision(entities[j])
+                col = entity.collision(entities[j])
 
                 # If the collision occurs earlier than the current one, keep it
                 if (
@@ -187,7 +392,18 @@ def play(entities):
             # End of the turn
             t = 1.0
         else:
-            print("> wham! <")
+            if first_col.b == Boundary.GOAL:
+                snaffle = first_col.a
+
+                entities.remove(snaffle)
+
+                if snaffle.x + snaffle.vx < 0:
+                    scored_goals.append((2, snaffle))  # returns which team scored
+                else:
+                    scored_goals.append((1, snaffle))
+
+                continue
+
             # Move the entities to reach the time `t` of the collision
             for entity in entities:
                 entity.move(first_col.t)
@@ -197,22 +413,7 @@ def play(entities):
 
             t += first_col.t
 
-    for entity in entities:
+    for entity in entities + POLES:
         entity.end()
 
-
-def main():
-    entities = [
-        Entity(4383, 2231, 4183 - 4383, 2195 - 2231, 150, 0.5, 0.75),
-        Entity(5061, 2132, 4600 - 5061, 2071 - 2132, 150, 0.5, 0.75),
-    ]
-    for t in range(4):
-        print(f"######## t={t} ########")
-        for i, entity in enumerate(entities):
-            print(f"({entity.x}, {entity.y}) w/ velocity ({entity.vx}, {entity.vy})")
-
-        play(entities)
-
-
-if __name__ == "__main__":
-    main()
+    return scored_goals
