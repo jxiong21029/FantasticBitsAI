@@ -22,9 +22,9 @@ class Buffer:
 
     def __init__(self, size, gamma=0.99, lam=0.95):
         self.obs_buf = {
-            "global_0": np.zeros((size, 3), dtype=np.float32),
+            "global_0": np.zeros((size, 4), dtype=np.float32),
             "entities_0": np.zeros((size, MAX_ENTITIES, ENTITY_BITS), dtype=np.float32),
-            "global_1": np.zeros((size, 3), dtype=np.float32),
+            "global_1": np.zeros((size, 4), dtype=np.float32),
             "entities_1": np.zeros((size, MAX_ENTITIES, ENTITY_BITS), dtype=np.float32),
         }
         self.act_buf = {
@@ -46,19 +46,22 @@ class Buffer:
         Append one timestep of agent-environment interaction to the buffer.
         """
         assert self.ptr < self.max_size  # buffer has to have room so you can store
-        for k, v in obs.items():
-            self.obs_buf[k][self.ptr] = v
-        for k, v in act.items():
-            self.act_buf[k][self.ptr] = v
 
-        self.rew_buf[0, self.ptr] = rew["wizard_0"]
-        self.rew_buf[1, self.ptr] = rew["wizard_1"]
+        self.obs_buf["global_0"][self.ptr] = obs["global_0"]
+        self.obs_buf["global_1"][self.ptr] = obs["global_1"]
+        self.obs_buf["entities_0"][self.ptr, : len(obs["entities_0"])] = obs[
+            "entities_0"
+        ]
+        self.obs_buf["entities_1"][self.ptr, : len(obs["entities_1"])] = obs[
+            "entities_1"
+        ]
 
-        self.val_buf[0, self.ptr] = val["wizard_0"]
-        self.val_buf[0, self.ptr] = val["wizard_1"]
+        for k in self.act_buf.keys():
+            self.act_buf[k] = act[k]
 
-        self.logp_buf[0, self.ptr] = logp["wizard_0"]
-        self.logp_buf[1, self.ptr] = logp["wizard_1"]
+        self.rew_buf[:, self.ptr] = rew
+        self.val_buf[:, self.ptr] = val
+        self.logp_buf[:, self.ptr] = logp
 
         self.ptr += 1
 
@@ -146,7 +149,8 @@ class Trainer:
 
     def collect_rollout(self):
         for t in range(self.buf.max_size):
-            action, value, logp = self.agents.step()
+            action, logp = self.agents.step(self.env_obs)
+            value = self.agents.predict_values(self.env_obs, action)
             next_obs, reward, done = self.env.step(action)
             self.buf.store(self.env_obs, action, reward, value, logp)
             self.env_obs = next_obs
@@ -180,7 +184,7 @@ class Trainer:
                 loss_pi = -(torch.min(ratio * adv, clip_adv)).mean()
 
                 v_pred = self.agents.predict_values(rollout, batch_idx)
-                loss_v = ((v_pred - rollout["ret"][:, batch_idx])**2).mean()
+                loss_v = ((v_pred - rollout["ret"][:, batch_idx]) ** 2).mean()
 
                 self.optim.zero_grad()
                 (loss_pi + loss_v).backward()

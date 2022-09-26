@@ -1,9 +1,12 @@
 import warnings
 
-import gym
 import numpy as np
 
 from engine import Bludger, Point, Snaffle, Wizard, engine_step
+
+
+DIST_NORM = 8000
+VEL_NORM = 1000
 
 
 class FantasticBits:
@@ -19,71 +22,44 @@ class FantasticBits:
         self.agents: list[Wizard] = []
         self.opponents: list[Wizard] = []
 
-        self.observation_space = {
-            "global_0": gym.spaces.Box(0, 1, shape=(3,)),
-            "entities_0": gym.spaces.Sequence(gym.spaces.Box(0, 1, shape=(9,))),
-            "global_1": gym.spaces.Box(0, 1, shape=(3,)),
-            "entities_1": gym.spaces.Sequence(gym.spaces.Box(0, 1, shape=(9,))),
-        }
-        self.action_spaces = {
-            "id_0": gym.spaces.Box(0, 1, dtype=int),
-            "target_0": gym.spaces.Box(-1, 1, shape=(2,)),
-            "id_1": gym.spaces.Box(0, 1, dtype=int),
-            "target_1": gym.spaces.Box(-1, 1, shape=(2,)),
-        }
-
     def get_obs(self):
-        # TODO: include grab cooldowns, throwable
-        ret = {}
-        for i in range(2):
-            global_obs = np.array(
-                [
-                    self.t / 200,
-                    self.score[0] / 7,
-                    self.score[1] / 7,
-                    1 if self.agents[i].grab_cd == 2 else 0,
-                ]
-            )
-            entity_obs = [
-                np.array(
-                    [
-                        (self.agents[i].x - 8000) / 8000,
-                        (self.agents[i].y - 3750) / 8000,
-                        self.agents[i].vx / 500,
-                        self.agents[i].vy / 500,
-                    ]
-                    + [1, 0, 0, 0, 0]
-                ),
-                np.array(
-                    [
-                        (self.agents[1 - i].x - self.agents[i].x) / 8000,
-                        (self.agents[1 - i].y - self.agents[i].y) / 8000,
-                        self.agents[1 - i].vx / 500,
-                        self.agents[1 - i].vy / 500,
-                    ]
-                    + [0, 1, 0, 0, 0]
-                ),
+        ret = {"global": np.array(
+            [
+                self.t / 200,
+                self.score[0] / 7,
+                self.score[1] / 7,
             ]
-            for entity in self.opponents + self.snaffles + self.bludgers:
-                if isinstance(entity, Wizard):
-                    class_embedding = [0, 0, 1, 0, 0]
-                elif isinstance(entity, Snaffle):
-                    class_embedding = [0, 0, 0, 1, 0]
-                else:
-                    class_embedding = [0, 0, 0, 0, 1]
+        )}
+        for i, wizard in enumerate(self.agents + self.opponents):
+            ret[f"wizard{i}"] = np.array([
+                (wizard.x - 8000) / DIST_NORM,
+                (wizard.y - 3750) / DIST_NORM,
+                wizard.vx / VEL_NORM,
+                wizard.vy / VEL_NORM,
+                0 if i < 2 else 1,  # 0 if teammate, 1 if opponent
+                1 if wizard.grab_cd == 2 else 0,  # throw available
+            ])
 
-                entity_obs.append(
-                    np.array(
-                        [
-                            (entity.x - self.agents[i].x) / 8000,
-                            (entity.y - self.agents[i].y) / 8000,
-                            entity.vx / 500,
-                            entity.vy / 500,
-                        ]
-                        + class_embedding
-                    )
-                )
-            ret[f"wizard_{i}"] = {"global": global_obs, "entities": entity_obs}
+        for i, snaffle in enumerate(self.snaffles):
+            ret[f"snaffle{i}"] = np.array([
+                (snaffle.x - 8000) / DIST_NORM,
+                (snaffle.y - 3750) / DIST_NORM,
+                snaffle.vx / VEL_NORM,
+                snaffle.vy / VEL_NORM,
+            ])
+
+        for i, bludger in enumerate(self.bludgers):
+            ret[f"bludger{i}"] = np.array([
+                (bludger.x - 8000) / DIST_NORM,
+                (bludger.y - 3750) / DIST_NORM,
+                bludger.vx / VEL_NORM,
+                bludger.vy / VEL_NORM,
+                (bludger.last_target.x - 8000) / DIST_NORM,
+                (bludger.last_target.y - 3750) / DIST_NORM,
+                (bludger.current_target.x - 8000) / DIST_NORM,
+                (bludger.current_target.y - 3750) / DIST_NORM,
+            ])
+
         return ret
 
     def reset(self):
@@ -119,7 +95,7 @@ class FantasticBits:
     def step(self, actions):
         assert sorted(list(actions.keys())) == ["wizard_0", "wizard_1"]
 
-        rewards = {"wizard_0": 0, "wizard_1": 1}
+        rewards = [0, 0]
 
         for i, agent in enumerate(self.agents):
             action = actions[f"wizard_{i}"]
@@ -152,8 +128,8 @@ class FantasticBits:
         new_total_dist = sum(s.distance(Point(16000, 3750)) for s in self.snaffles)
 
         if self.shape_snaffling:
-            rewards["wizard_0"] += (total_snaffle_dist - new_total_dist) / 16000
-            rewards["wizard_1"] += (total_snaffle_dist - new_total_dist) / 16000
+            rewards[0] += (total_snaffle_dist - new_total_dist) / 10000
+            rewards[1] += (total_snaffle_dist - new_total_dist) / 10000
 
         for team, snaffle in scored_goals:
             self.snaffles.remove(snaffle)
@@ -161,11 +137,11 @@ class FantasticBits:
             if team == 1:
                 closer_wizard = min(self.agents, key=lambda w: w.distance2(snaffle))
                 if closer_wizard is self.agents[0]:
-                    rewards["wizard_0"] += 10
-                    rewards["wizard_1"] += 1
+                    rewards[0] += 10
+                    rewards[1] += 1
                 else:
-                    rewards["wizard_0"] += 1
-                    rewards["wizard_1"] += 10
+                    rewards[0] += 1
+                    rewards[1] += 10
 
         done = len(self.snaffles) == 0 or self.t == 200
 
