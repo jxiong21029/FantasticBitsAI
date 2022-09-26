@@ -1,16 +1,15 @@
 import numpy as np
 import scipy.signal
 import torch
+import tqdm
 
-from env import FantasticBits
-
-MAX_ENTITIES = 13
-ENTITY_BITS = 9
+from agents import Agents
+from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
 
 
 # adapted from SpinningUp PPO
 def discount_cumsum(x, discount):
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[:, ::-1], axis=1)[:, ::-1]
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 
 class Buffer:
@@ -22,22 +21,26 @@ class Buffer:
 
     def __init__(self, size, gamma=0.99, lam=0.95):
         self.obs_buf = {
-            "global_0": np.zeros((size, 4), dtype=np.float32),
-            "entities_0": np.zeros((size, MAX_ENTITIES, ENTITY_BITS), dtype=np.float32),
-            "global_1": np.zeros((size, 4), dtype=np.float32),
-            "entities_1": np.zeros((size, MAX_ENTITIES, ENTITY_BITS), dtype=np.float32),
+            "global": np.zeros((size, SZ_GLOBAL), dtype=np.float32),
         }
+        for i in range(4):
+            self.obs_buf[f"wizard{i}"] = np.zeros((size, SZ_WIZARD), dtype=np.float32)
+        for i in range(7):
+            self.obs_buf[f"snaffle{i}"] = np.full(
+                (size, SZ_SNAFFLE), np.nan, dtype=np.float32
+            )
+        for i in range(2):
+            self.obs_buf[f"bludger{i}"] = np.zeros((size, SZ_BLUDGER), dtype=np.float32)
+
         self.act_buf = {
-            "id_0": np.zeros(size, dtype=int),
-            "target_0": np.zeros((size, 2), dtype=np.float32),
-            "id_1": np.zeros(size, dtype=int),
-            "target_1": np.zeros((size, 2), dtype=np.float32),
+            "id": np.zeros((size, 2), dtype=np.int64),
+            "target": np.zeros((size, 2, 2), dtype=np.float32),
         }
-        self.adv_buf = np.zeros((2, size), dtype=np.float32)
-        self.rew_buf = np.zeros((2, size), dtype=np.float32)
-        self.ret_buf = np.zeros((2, size), dtype=np.float32)
-        self.val_buf = np.zeros((2, size), dtype=np.float32)
-        self.logp_buf = np.zeros((2, size), dtype=np.float32)
+        self.adv_buf = np.zeros((size, 2), dtype=np.float32)
+        self.rew_buf = np.zeros((size, 2), dtype=np.float32)
+        self.ret_buf = np.zeros((size, 2), dtype=np.float32)
+        self.val_buf = np.zeros((size, 2), dtype=np.float32)
+        self.logp_buf = np.zeros((size, 2), dtype=np.float32)
         self.gamma, self.lam = gamma, lam
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
@@ -47,21 +50,15 @@ class Buffer:
         """
         assert self.ptr < self.max_size  # buffer has to have room so you can store
 
-        self.obs_buf["global_0"][self.ptr] = obs["global_0"]
-        self.obs_buf["global_1"][self.ptr] = obs["global_1"]
-        self.obs_buf["entities_0"][self.ptr, : len(obs["entities_0"])] = obs[
-            "entities_0"
-        ]
-        self.obs_buf["entities_1"][self.ptr, : len(obs["entities_1"])] = obs[
-            "entities_1"
-        ]
+        for k, v in obs.items():
+            self.obs_buf[k][self.ptr] = v
 
         for k in self.act_buf.keys():
-            self.act_buf[k] = act[k]
+            self.act_buf[k][self.ptr] = act[k]
 
-        self.rew_buf[:, self.ptr] = rew
-        self.val_buf[:, self.ptr] = val
-        self.logp_buf[:, self.ptr] = logp
+        self.rew_buf[self.ptr, :] = rew
+        self.val_buf[self.ptr, :] = val
+        self.logp_buf[self.ptr, :] = logp
 
         self.ptr += 1
 
@@ -83,18 +80,20 @@ class Buffer:
 
         path_slice = slice(self.path_start_idx, self.ptr)
         rews = np.append(
-            self.rew_buf[path_slice], np.reshape(last_vals, (2, 1)), axis=1
+            self.rew_buf[path_slice], np.reshape(last_vals, (1, 2)), axis=0
         )
         vals = np.append(
-            self.val_buf[path_slice], np.reshape(last_vals, (2, 1)), axis=1
+            self.val_buf[path_slice], np.reshape(last_vals, (1, 2)), axis=0
         )
 
         # the next two lines implement GAE-Lambda advantage calculation
-        deltas = rews[:, :-1] + self.gamma * vals[:, 1:] - vals[:, :-1]
-        self.adv_buf[:, path_slice] = discount_cumsum(deltas, self.gamma * self.lam)
+        deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
+        self.adv_buf[path_slice] = discount_cumsum(deltas, self.gamma * self.lam)
+
+        # TODO reward normalization
 
         # the next line computes rewards-to-go, to be targets for the value function
-        self.ret_buf[:, path_slice] = discount_cumsum(rews, self.gamma)[:, :-1]
+        self.ret_buf[path_slice] = discount_cumsum(rews, self.gamma)[:-1]
 
         self.path_start_idx = self.ptr
 
@@ -108,6 +107,9 @@ class Buffer:
         self.ptr, self.path_start_idx = 0, 0
         # the next two lines implement the advantage normalization trick
         self.adv_buf = (self.adv_buf - self.adv_buf.mean()) / self.adv_buf.std()
+
+        print(f"value targets: mean {np.mean(self.ret_buf)}, std {np.std(self.ret_buf)}" )
+        print("explained variance:", 1 - np.var(self.ret_buf - self.val_buf) / np.var(self.ret_buf))
 
         return {
             "obs": {k: torch.as_tensor(v) for k, v in self.obs_buf.items()},
@@ -129,6 +131,7 @@ class Trainer:
         minibatch_size=64,
         wake_phases=1,
         sleep_phases=2,
+        env_kwargs=None,
         seed=None,
     ):
         # agent.step(single obs) -> action, value, logp
@@ -144,27 +147,32 @@ class Trainer:
         self.wake_phases = wake_phases
         self.sleep_phases = sleep_phases
 
-        self.env = FantasticBits()
+        if env_kwargs is None:
+            env_kwargs = {}
+        self.env = FantasticBits(**env_kwargs)
         self.env_obs = self.env.reset()
 
     def collect_rollout(self):
-        for t in range(self.buf.max_size):
+        tot_r = 0
+        for t in tqdm.trange(self.buf.max_size):
             action, logp = self.agents.step(self.env_obs)
-            value = self.agents.predict_values(self.env_obs, action)
+            value = self.agents.predict_value(self.env_obs, None)
             next_obs, reward, done = self.env.step(action)
+            tot_r += reward.sum()
             self.buf.store(self.env_obs, action, reward, value, logp)
             self.env_obs = next_obs
 
             epoch_ended = t == self.buf.max_size - 1
             if epoch_ended or done:
                 if epoch_ended:
-                    _, value, _ = self.agents.step(self.env_obs)
+                    value = self.agents.predict_value(self.env_obs, None)
                 else:
                     value = (0, 0)
 
                 self.buf.finish_path(value)
                 self.env_obs = self.env.reset()
 
+        print(tot_r)
         return self.buf.get()
 
     def train(self):
@@ -177,14 +185,14 @@ class Trainer:
                 batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
 
                 logp_old = rollout["logp"][batch_idx]
-                logp = self.agents.logp(rollout["obs"], batch_idx)
+                logp = self.agents.logp(rollout, batch_idx)
                 ratio = torch.exp(logp - logp_old)
-                adv = rollout["adv"][:, batch_idx]
+                adv = rollout["adv"][batch_idx]
                 clip_adv = torch.clamp(ratio, 0.8, 1.2) * adv
                 loss_pi = -(torch.min(ratio * adv, clip_adv)).mean()
 
-                v_pred = self.agents.predict_values(rollout, batch_idx)
-                loss_v = ((v_pred - rollout["ret"][:, batch_idx]) ** 2).mean()
+                v_pred = self.agents.value_forward(rollout, batch_idx)
+                loss_v = ((v_pred - rollout["ret"][batch_idx]) ** 2).mean()
 
                 self.optim.zero_grad()
                 (loss_pi + loss_v).backward()
@@ -192,3 +200,19 @@ class Trainer:
 
         for _ in range(self.sleep_phases):
             pass
+
+
+def main():
+    for _ in range(100):
+        trainer = Trainer(
+            Agents(),
+            rollout_steps=1024,
+            lr=3e-4,
+            wake_phases=2,
+            env_kwargs={"shape_snaffling": True},
+        )
+        trainer.train()
+
+
+if __name__ == "__main__":
+    main()
