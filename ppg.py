@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import scipy.signal
 import torch
@@ -10,6 +12,38 @@ from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
 # adapted from SpinningUp PPO
 def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+
+
+class RunningMoments:
+    """
+    Tracks running mean and variance
+    Adapted from github.com/MadryLab/implementation-matters, which took it from
+    github.com/joschu/modular_rl. Math in johndcook.com/blog/standard_deviation
+    """
+
+    def __init__(self):
+        self.n = 0
+        self.m = 0
+        self.s = 0
+
+    def push(self, x):
+        assert isinstance(x, float) or isinstance(x, int)
+        self.n += 1
+        if self.n == 1:
+            self.m = x
+        else:
+            old_m = self.m
+            self.m = old_m + (x - old_m) / self.n
+            self.s = self.s + (x - old_m) * (x - self.m)
+
+    def mean(self):
+        return self.m
+
+    def std(self):
+        if self.n > 1:
+            return math.sqrt(self.s / (self.n - 1))
+        else:
+            return self.m
 
 
 class Buffer:
@@ -44,6 +78,9 @@ class Buffer:
         self.gamma, self.lam = gamma, lam
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
+        self.discounted_rew_tot = np.zeros(2, dtype=np.float32)
+        self.rew_stats = [RunningMoments(), RunningMoments()]
+
     def store(self, obs, act, rew, val, logp):
         """
         Append one timestep of agent-environment interaction to the buffer.
@@ -56,7 +93,11 @@ class Buffer:
         for k in self.act_buf.keys():
             self.act_buf[k][self.ptr] = act[k]
 
-        self.rew_buf[self.ptr, :] = rew
+        self.discounted_rew_tot = 0.99 * self.discounted_rew_tot + rew
+        for i in range(2):
+            self.rew_stats[i].push(self.discounted_rew_tot[i])
+            self.rew_buf[self.ptr, i] = rew[i] / (self.rew_stats[i].std() + 1e-8)
+
         self.val_buf[self.ptr, :] = val
         self.logp_buf[self.ptr, :] = logp
 
@@ -90,8 +131,6 @@ class Buffer:
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
         self.adv_buf[path_slice] = discount_cumsum(deltas, self.gamma * self.lam)
 
-        # TODO reward normalization
-
         # the next line computes rewards-to-go, to be targets for the value function
         self.ret_buf[path_slice] = discount_cumsum(rews, self.gamma)[:-1]
 
@@ -105,11 +144,17 @@ class Buffer:
         """
         assert self.ptr == self.max_size  # buffer has to be full before you can get
         self.ptr, self.path_start_idx = 0, 0
-        # the next two lines implement the advantage normalization trick
+
+        # advantage normalization trick
         self.adv_buf = (self.adv_buf - self.adv_buf.mean()) / self.adv_buf.std()
 
-        print(f"value targets: mean {np.mean(self.ret_buf)}, std {np.std(self.ret_buf)}" )
-        print("explained variance:", 1 - np.var(self.ret_buf - self.val_buf) / np.var(self.ret_buf))
+        print(
+            f"value targets: mean {np.mean(self.ret_buf)}, std {np.std(self.ret_buf)}"
+        )
+        print(
+            f"explained variance: "
+            f"{1 - np.var(self.ret_buf - self.val_buf) / np.var(self.ret_buf):.1%}"
+        )
 
         return {
             "obs": {k: torch.as_tensor(v) for k, v in self.obs_buf.items()},
@@ -172,13 +217,21 @@ class Trainer:
                 self.buf.finish_path(value)
                 self.env_obs = self.env.reset()
 
-        print(tot_r)
+        print(f"mean reward per 200: {tot_r / self.buf.max_size:.3f}")
         return self.buf.get()
 
     def train(self):
         rollout = self.collect_rollout()
 
         idx = np.arange(self.buf.max_size)
+
+        losses_pi = []
+        losses_v = []
+        grad_clipped = []
+        grad_norms = []
+        # TODO code review and debugger run
+        # TODO probe environments
+        # TODO clip ratio, entropy
         for _ in range(self.wake_phases):
             self.rng.shuffle(idx)
             for i in range(idx.shape[0] // self.minibatch_size):
@@ -190,27 +243,44 @@ class Trainer:
                 adv = rollout["adv"][batch_idx]
                 clip_adv = torch.clamp(ratio, 0.8, 1.2) * adv
                 loss_pi = -(torch.min(ratio * adv, clip_adv)).mean()
+                losses_pi.append(loss_pi.item())
 
                 v_pred = self.agents.value_forward(rollout, batch_idx)
                 loss_v = ((v_pred - rollout["ret"][batch_idx]) ** 2).mean()
+                losses_v.append(loss_v.item())
 
                 self.optim.zero_grad()
                 (loss_pi + loss_v).backward()
+                norm = torch.nn.utils.clip_grad_norm_(self.agents.parameters(), 10.0)
+                if norm > 10.0:
+                    grad_clipped.append(True)
+                else:
+                    grad_clipped.append(False)
+                grad_norms.append(norm.item())
                 self.optim.step()
+
+        print(
+            f"policy loss mean: {np.mean(losses_pi):.2f}, std: {np.std(losses_pi):.2f}"
+        )
+        print(f"value loss mean: {np.mean(losses_v):.2f}, std: {np.std(losses_v):.2f}")
+        print(f"clip ratio: {np.mean(grad_clipped):.1%}")
+        print(
+            f"grad norm mean: {np.mean(grad_norms):.2f}, std: {np.std(grad_norms):.2f}"
+        )
 
         for _ in range(self.sleep_phases):
             pass
 
 
 def main():
+    trainer = Trainer(
+        Agents(),
+        rollout_steps=4096,
+        lr=3e-4,
+        wake_phases=3,
+        env_kwargs={"shape_snaffling": True},
+    )
     for _ in range(100):
-        trainer = Trainer(
-            Agents(),
-            rollout_steps=1024,
-            lr=3e-4,
-            wake_phases=2,
-            env_kwargs={"shape_snaffling": True},
-        )
         trainer.train()
 
 

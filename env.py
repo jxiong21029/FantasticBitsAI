@@ -133,15 +133,15 @@ class FantasticBits:
             else:
                 agent.thrust(agent.x + direction[0], agent.y + direction[1])
 
-        for opponent in self.opponents:
-            nearest_snaffle = min(self.snaffles, key=lambda s: s.distance2(opponent))
-            if opponent.grab_cd == 2:
-                nearest_snaffle.yeet(0, 3750)
-            else:
-                opponent.thrust(nearest_snaffle.x, nearest_snaffle.y)
+        # for opponent in self.opponents:
+        #     nearest_snaffle = min(self.snaffles, key=lambda s: s.distance2(opponent))
+        #     if opponent.grab_cd == 2:
+        #         nearest_snaffle.yeet(0, 3750)
+        #     else:
+        #         opponent.thrust(nearest_snaffle.x, nearest_snaffle.y)
 
-        for bludger in self.bludgers:
-            bludger.bludge(self.agents + self.opponents)
+        # for bludger in self.bludgers:
+        #     bludger.bludge(self.agents + self.opponents)
 
         total_snaffle_dist = sum(s.distance(Point(16000, 3750)) for s in self.snaffles)
 

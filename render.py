@@ -26,8 +26,8 @@ for _ in range(200):
 
     env.step(
         {
-            "wizard_0": {"move": np.array([1, -1])},
-            "wizard_1": {"move": np.array([0, 1])},
+            "id": np.array([0, 0], dtype=np.int64),
+            "target": np.random.randn(2, 2),
         }
     )
 

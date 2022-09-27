@@ -28,7 +28,6 @@ class Encoder(nn.Module):
         )
 
     def forward(self, obs, batch_idx=None):
-        # TODO: add masking
         if batch_idx is None:
             x = torch.zeros((len(obs), 1, self.d_model))
             for i, (k, v) in enumerate(obs.items()):
@@ -42,7 +41,10 @@ class Encoder(nn.Module):
                     x[i, :] = self.bludger_prep(torch.tensor(v))
                 else:
                     warnings.warn(f"unexpected key: {k}")
-            return self.encoder(x).squeeze(dim=1)  # S x 32
+            ret = self.encoder(x).squeeze(dim=1)  # S x 32
+            # if ret.isnan().any():
+            #     raise ValueError
+            return ret
         else:
             x = torch.zeros((len(obs), len(batch_idx), self.d_model))  # S x B x 32
 
@@ -50,31 +52,37 @@ class Encoder(nn.Module):
             padding_mask = torch.zeros((len(batch_idx), len(obs)), dtype=bool)
 
             for i, (k, v) in enumerate(obs.items()):
-                # v[batch_idx] has shape B, F for some F in (4, 6, 8, 9)
+                # shape B, F; F=4 (snaffle), 6 (wizard), etc..
+                entry = v[batch_idx]
                 if k.startswith("snaffle"):
                     if (
-                        not torch.equal(v.isnan()[:, 0], v.isnan()[:, 1])
-                        or not torch.equal(v.isnan()[:, 0], v.isnan()[:, 2])
-                        or not torch.equal(v.isnan()[:, 0], v.isnan()[:, 3])
+                        not torch.equal(entry.isnan()[:, 0], entry.isnan()[:, 1])
+                        or not torch.equal(entry.isnan()[:, 0], entry.isnan()[:, 2])
+                        or not torch.equal(entry.isnan()[:, 0], entry.isnan()[:, 3])
                     ):
                         raise ValueError
-                    assert v[batch_idx].isnan()[:, 0].shape == (len(batch_idx),)
-                    padding_mask[v[batch_idx].isnan()[:, 0], i] = 1
-                elif v.isnan().any():
+                    padding_mask[entry.isnan()[:, 0], i] = 1
+                    entry = entry.clone()
+                    entry[entry.isnan()] = 0
+                elif entry.isnan().any():
                     raise ValueError
 
                 if k.startswith("global"):
-                    x[i, :] = self.global_prep(v[batch_idx])
+                    x[i, :] = self.global_prep(entry)
                 elif k.startswith("wizard"):
-                    x[i, :] = self.wizard_prep(v[batch_idx])
+                    x[i, :] = self.wizard_prep(entry)
                 elif k.startswith("snaffle"):
-                    x[i, :] = self.snaffle_prep(v[batch_idx])
+                    x[i, :] = self.snaffle_prep(entry)
                 elif k.startswith("bludger"):
-                    x[i, :] = self.bludger_prep(v[batch_idx])
+                    x[i, :] = self.bludger_prep(entry)
                 else:
                     warnings.warn(f"unexpected key: {k}")
 
             ret = self.encoder(x, src_key_padding_mask=padding_mask)  # S x B x 32
+
+            if ret.isnan().any():
+                breakpoint()
+
             return ret
 
 
@@ -88,6 +96,10 @@ class Agents(nn.Module):
         self.move_head = nn.Linear(d_model, 4)
         self.throw_head = nn.Linear(d_model, 4)
         self.value_head = nn.Linear(d_model, 1)
+
+        with torch.no_grad():
+            self.move_head.weight *= 0.01
+            self.throw_head.weight *= 0.01
 
         self._std_offset = torch.log(torch.exp(torch.tensor(0.5)) - 1)
 
