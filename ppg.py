@@ -133,6 +133,12 @@ class Buffer:
 
         # the next line computes rewards-to-go, to be targets for the value function
         self.ret_buf[path_slice] = discount_cumsum(rews, self.gamma)[:-1]
+        assert np.isclose(
+            discount_cumsum(rews[:, 0], self.gamma)[:-1], self.ret_buf[path_slice][:, 0]
+        ).all()
+        assert np.isclose(
+            discount_cumsum(rews[:, 1], self.gamma)[:-1], self.ret_buf[path_slice][:, 1]
+        ).all()
 
         self.path_start_idx = self.ptr
 
@@ -145,16 +151,12 @@ class Buffer:
         assert self.ptr == self.max_size  # buffer has to be full before you can get
         self.ptr, self.path_start_idx = 0, 0
 
-        # advantage normalization trick
-        self.adv_buf = (self.adv_buf - self.adv_buf.mean()) / self.adv_buf.std()
-
         print(
             f"value targets: mean {np.mean(self.ret_buf)}, std {np.std(self.ret_buf)}"
         )
-        print(
-            f"explained variance: "
-            f"{1 - np.var(self.ret_buf - self.val_buf) / np.var(self.ret_buf):.1%}"
-        )
+
+        explained_var = 1 - np.var(self.ret_buf - self.val_buf) / np.var(self.ret_buf)
+        print(f"explained variance: {explained_var:.1%}")
 
         return {
             "obs": {k: torch.as_tensor(v) for k, v in self.obs_buf.items()},
@@ -169,6 +171,8 @@ class Trainer:
     def __init__(
         self,
         agents,
+        env_fn,
+        env_kwargs=None,
         lr=1e-3,
         rollout_steps=4096,
         gamma=0.99,
@@ -176,7 +180,6 @@ class Trainer:
         minibatch_size=64,
         wake_phases=1,
         sleep_phases=2,
-        env_kwargs=None,
         seed=None,
     ):
         # agent.step(single obs) -> action, value, logp
@@ -194,7 +197,9 @@ class Trainer:
 
         if env_kwargs is None:
             env_kwargs = {}
-        self.env = FantasticBits(**env_kwargs)
+        self.env = env_fn(**env_kwargs)
+        self.env_fn = env_fn
+        self.env_kwargs = env_kwargs
         self.env_obs = self.env.reset()
 
     def collect_rollout(self):
@@ -209,10 +214,10 @@ class Trainer:
 
             epoch_ended = t == self.buf.max_size - 1
             if epoch_ended or done:
-                if epoch_ended:
-                    value = self.agents.predict_value(self.env_obs, None)
-                else:
+                if done:
                     value = (0, 0)
+                else:
+                    value = self.agents.predict_value(self.env_obs, None)
 
                 self.buf.finish_path(value)
                 self.env_obs = self.env.reset()
@@ -229,6 +234,7 @@ class Trainer:
         losses_v = []
         grad_clipped = []
         grad_norms = []
+        clip_ratios = []
         # TODO code review and debugger run
         # TODO probe environments
         # TODO clip ratio, entropy
@@ -240,9 +246,15 @@ class Trainer:
                 logp_old = rollout["logp"][batch_idx]
                 logp = self.agents.logp(rollout, batch_idx)
                 ratio = torch.exp(logp - logp_old)
+
+                clip_ratios.append(
+                    torch.gt(torch.abs(ratio - 1), 0.2).float().mean().item()
+                )
+
                 adv = rollout["adv"][batch_idx]
-                clip_adv = torch.clamp(ratio, 0.8, 1.2) * adv
-                loss_pi = -(torch.min(ratio * adv, clip_adv)).mean()
+                norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+                clip_adv = torch.clamp(ratio, 0.8, 1.2) * norm_adv
+                loss_pi = -(torch.min(ratio * norm_adv, clip_adv)).mean()
                 losses_pi.append(loss_pi.item())
 
                 v_pred = self.agents.value_forward(rollout, batch_idx)
@@ -263,7 +275,8 @@ class Trainer:
             f"policy loss mean: {np.mean(losses_pi):.2f}, std: {np.std(losses_pi):.2f}"
         )
         print(f"value loss mean: {np.mean(losses_v):.2f}, std: {np.std(losses_v):.2f}")
-        print(f"clip ratio: {np.mean(grad_clipped):.1%}")
+        print(f"ppo clip proportion: {np.mean(clip_ratios):.1%}")
+        print(f"grad clip proportion: {np.mean(grad_clipped):.1%}")
         print(
             f"grad norm mean: {np.mean(grad_norms):.2f}, std: {np.std(grad_norms):.2f}"
         )
@@ -271,16 +284,48 @@ class Trainer:
         for _ in range(self.sleep_phases):
             pass
 
+    # def evaluate(self):
+    #     done = False
+    #     eval_env = copy.deepcopy(self.env)
+    #     obs = eval_env.reset()
+    #     while not done:
+    #         with torch.no_grad():
+    #             actions = self.agents.step(obs)
+
+    def evaluate_with_render(self):
+        import pygame
+        import sys
+        import time
+
+        done = False
+        eval_env = self.env_fn(**self.env_kwargs, render=True)
+        obs = eval_env.reset()
+        tot_rew = np.zeros(2)
+        while not done:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:
+                    pygame.quit()
+                    pygame.display.quit()
+                    sys.exit()
+
+            with torch.no_grad():
+                actions, _ = self.agents.step(obs)
+            obs, rew, done = eval_env.step(actions)
+            tot_rew += rew
+            time.sleep(0.1)
+        print(f"total reward: {tot_rew.tolist()}")
+
 
 def main():
     trainer = Trainer(
         Agents(),
+        FantasticBits,
         rollout_steps=4096,
         lr=3e-4,
         wake_phases=3,
         env_kwargs={"shape_snaffling": True},
     )
-    for _ in range(100):
+    for _ in range(250):
         trainer.train()
 
 
