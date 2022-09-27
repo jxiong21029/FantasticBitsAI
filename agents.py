@@ -96,6 +96,7 @@ class Agents(nn.Module):
         self.move_head = nn.Linear(d_model, 4)
         self.throw_head = nn.Linear(d_model, 4)
         self.value_head = nn.Linear(d_model, 1)
+        self.aux_value_head = nn.Linear(d_model, 1)
 
         with torch.no_grad():
             self.move_head.weight *= 0.01
@@ -176,3 +177,6 @@ class Agents(nn.Module):
             embed = z[i + 1]  # B x 32
             ret[:, i] = self.value_head(embed).squeeze(1)  # B x 1  ->  B
         return ret
+
+    def value_forward_aux(self, rollout, batch_idx):
+        pass

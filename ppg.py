@@ -323,7 +323,7 @@ def main():
         rollout_steps=4096,
         lr=3e-4,
         wake_phases=3,
-        env_kwargs={"shape_snaffling": True},
+        env_kwargs={"shape_snaffle_dist": True},
     )
     for _ in range(250):
         trainer.train()

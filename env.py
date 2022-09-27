@@ -1,5 +1,4 @@
 import sys
-import time
 import warnings
 
 import numpy as np
@@ -19,9 +18,9 @@ MARGIN = 25
 
 
 class FantasticBits:
-    def __init__(self, shape_snaffling=False, render=False, seed=None):
+    def __init__(self, shape_snaffle_dist=False, render=False, seed=None):
         self.rng = np.random.default_rng(seed)
-        self.shape_snaffling = shape_snaffling
+        self.shape_snaffle_dist = shape_snaffle_dist
         self.render = render
 
         self.t = 0
@@ -165,7 +164,7 @@ class FantasticBits:
         new_total_dist = sum(s.distance(Point(16000, 3750)) for s in self.snaffles)
 
         # NOTE: hardcoded discount factor
-        if self.shape_snaffling:
+        if self.shape_snaffle_dist:
             rewards[0] += (total_snaffle_dist - new_total_dist) / 10000
             rewards[1] += (total_snaffle_dist - new_total_dist) / 10000
 

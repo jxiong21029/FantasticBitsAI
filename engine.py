@@ -91,8 +91,7 @@ class Entity(Point):
         if self.vx == other.vx and self.vy == other.vy:
             return None
 
-        # We place ourselves in the reference frame of other. other is therefore
-        # stationary and is at (0,0)
+        # Place self in the other reference frame
         x = self.x - other.x
         y = self.y - other.y
         myp = Point(x, y)
@@ -348,7 +347,7 @@ POLES = [
 @dataclass
 class Collision:
     a: Entity
-    b: Entity
+    b: Boundary or Entity
     t: float
 
 
