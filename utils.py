@@ -1,9 +1,12 @@
 import math
-from collections import defaultdict
+import os
 import re
+import shutil
+from collections import defaultdict
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import scipy.signal
 
 
@@ -49,6 +52,8 @@ class Logger:
         self.cumulative_data = defaultdict(list)
         self.epoch_data = defaultdict(list)
 
+        self.cleared_previous = False
+
     def log(self, **kwargs):
         for k, v in kwargs.items():
             self.epoch_data[k].append(v)
@@ -57,22 +62,37 @@ class Logger:
         seen = {k: False for k in self.cumulative_data.keys()}
         for k, v in self.epoch_data.items():
             if len(v) == 1:
-                self.cumulative_data[k].append(v)
+                self.cumulative_data[k].append(v[0])
                 seen[k] = True
-                continue
+            elif isinstance(v[0], bool):
+                self.cumulative_data[k + "_prop"].append(np.mean(v, dtype=np.float32))
+                seen[k + "_prop"] = True
+            else:
+                self.cumulative_data[k + "_mean"].append(np.mean(v))
+                seen[k + "_mean"] = True
+                self.cumulative_data[k + "_std"].append(np.std(v))
+                seen[k + "_std"] = True
 
-            self.cumulative_data[k + "_mean"].append(np.mean(v))
-            seen[k + "_mean"] = True
-            self.cumulative_data[k + "_std"].append(np.std(v))
-            seen[k + "_std"] = True
-
-        for k, v in seen.items():
-            if not v:
+        maxlen = max(len(v) for v in self.cumulative_data.values())
+        for k, v in self.cumulative_data.items():
+            if len(v) < maxlen:
                 self.cumulative_data[k].append(np.nan)
 
         self.epoch_data.clear()
 
+    def to_df(self):
+        return pd.DataFrame(self.cumulative_data)
+
     def generate_plots(self, fname_prefix=None):
+        if not self.cleared_previous:
+            folder = "plotgen/"
+            for filename in os.listdir(folder):
+                file_path = os.path.join(folder, filename)
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            self.cleared_previous = True
         x = np.arange(len(self.cumulative_data[list(self.cumulative_data.keys())[0]]))
 
         for k, v in self.cumulative_data.items():
@@ -84,16 +104,19 @@ class Logger:
             if k.endswith("_mean"):
                 name = k[:-5]
 
-                ax.plot(x, v)
+                (line,) = ax.plot(x, v, label=k)
                 stds = np.array(self.cumulative_data[name + "_std"])
-                ax.fill_between(x, v - stds, v + stds)
+                ax.fill_between(
+                    x, v - stds, v + stds, color=line.get_color(), alpha=0.15
+                )
             else:
                 name = k
                 ax.plot(x, v)
-            fig.suptitle(name.title())
+            fig.suptitle(name)
             if fname_prefix is None:
                 fig.savefig(f"plotgen/{name}.png")
             else:
                 if re.fullmatch("[a-zA-Z0-9]", fname_prefix[-1]):
                     fname_prefix += "_"
                 fig.savefig(f"plotgen/{fname_prefix}{name}.png")
+            plt.close(fig)

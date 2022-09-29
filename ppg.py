@@ -4,7 +4,7 @@ import tqdm
 
 from agents import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
-from utils import RunningMoments, discount_cumsum
+from utils import Logger, RunningMoments, discount_cumsum
 
 
 # adapted from SpinningUp PPO
@@ -15,7 +15,9 @@ class Buffer:
     for calculating the advantages of state-action pairs.
     """
 
-    def __init__(self, size, gamma=0.99, lam=0.95):
+    def __init__(self, size, gamma=0.99, lam=0.95, logger=None):
+        self.logger = logger
+
         self.obs_buf = {
             "global": np.zeros((size, SZ_GLOBAL), dtype=np.float32),
         }
@@ -113,12 +115,13 @@ class Buffer:
         assert self.ptr == self.max_size  # buffer has to be full before you can get
         self.ptr, self.path_start_idx = 0, 0
 
-        print(
-            f"value targets: mean {np.mean(self.ret_buf)}, std {np.std(self.ret_buf)}"
-        )
-
         explained_var = 1 - np.var(self.ret_buf - self.val_buf) / np.var(self.ret_buf)
-        print(f"explained variance: {explained_var:.1%}")
+        if self.logger is not None:
+            self.logger.log(
+                value_target_mean=np.mean(self.ret_buf),
+                value_target_std=np.std(self.ret_buf),
+                explained_variance=explained_var,
+            )
 
         return {
             "obs": {k: torch.as_tensor(v) for k, v in self.obs_buf.items()},
@@ -149,28 +152,31 @@ class Trainer:
         # agent.logp(batch obs) -> logps
 
         self.rng = np.random.default_rng(seed=seed)
+        self.logger = Logger()
 
         self.agents = agents
-        self.optim = torch.optim.Adam(agents.parameters(), lr=lr)
-        self.buf = Buffer(size=rollout_steps, gamma=gamma, lam=gae_lambda)
+        self.optim = torch.optim.Adam(agents.parameters(), lr=lr, weight_decay=1e-4)
+        self.buf = Buffer(
+            size=rollout_steps, gamma=gamma, lam=gae_lambda, logger=self.logger
+        )
         self.minibatch_size = minibatch_size
         self.wake_phases = wake_phases
         self.sleep_phases = sleep_phases
 
         if env_kwargs is None:
             env_kwargs = {}
-        self.env = env_fn(**env_kwargs)
+        self.env = env_fn(**env_kwargs, logger=self.logger)
         self.env_fn = env_fn
         self.env_kwargs = env_kwargs
         self.env_obs = self.env.reset()
 
     def collect_rollout(self):
-        tot_r = 0
+        curr_ep_reward = 0
         for t in tqdm.trange(self.buf.max_size):
             action, logp = self.agents.step(self.env_obs)
             value = self.agents.predict_value(self.env_obs, None)
             next_obs, reward, done = self.env.step(action)
-            tot_r += reward.sum()
+            curr_ep_reward += reward.sum()
             self.buf.store(self.env_obs, action, reward, value, logp)
             self.env_obs = next_obs
 
@@ -184,7 +190,9 @@ class Trainer:
                 self.buf.finish_path(value)
                 self.env_obs = self.env.reset()
 
-        print(f"mean reward per 200: {tot_r / self.buf.max_size:.3f}")
+                self.logger.log(rollout_ep_reward=curr_ep_reward)
+                curr_ep_reward = 0
+
         return self.buf.get()
 
     def train(self):
@@ -192,13 +200,12 @@ class Trainer:
 
         idx = np.arange(self.buf.max_size)
 
-        losses_pi = []
-        losses_v = []
-        grad_clipped = []
-        grad_norms = []
-        clip_ratios = []
-        # TODO probe environments?
-        # TODO logging, entropy
+        # TODO logging policy entropy (add entropy reg?)
+        # TODO hyperparameter tuning / evaluation framework
+        # TODO architecture design: e.g. add relu, norm after preprocessors, restructure
+        #  obs/action embeddings
+        # TODO write a blog post about this
+        # TODO boost performance w/ behavioral cloning + KL penalty finetuning
         for _ in range(self.wake_phases):
             self.rng.shuffle(idx)
             for i in range(idx.shape[0] // self.minibatch_size):
@@ -208,42 +215,57 @@ class Trainer:
                 logp = self.agents.logp(rollout, batch_idx)
                 ratio = torch.exp(logp - logp_old)
 
-                clip_ratios.append(
-                    torch.gt(torch.abs(ratio - 1), 0.2).float().mean().item()
-                )
-
                 adv = rollout["adv"][batch_idx]
                 norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
                 clip_adv = torch.clamp(ratio, 0.8, 1.2) * norm_adv
                 loss_pi = -(torch.min(ratio * norm_adv, clip_adv)).mean()
-                losses_pi.append(loss_pi.item())
 
                 v_pred = self.agents.value_forward(rollout, batch_idx)
                 loss_v = ((v_pred - rollout["ret"][batch_idx]) ** 2).mean()
-                losses_v.append(loss_v.item())
+
+                self.logger.log(
+                    loss_pi=loss_pi.item(),
+                    loss_v=loss_v.item(),
+                    ppo_clip_ratio=torch.gt(torch.abs(ratio - 1), 0.2)
+                    .float()
+                    .mean()
+                    .item(),
+                )
 
                 self.optim.zero_grad()
                 (loss_pi + loss_v).backward()
-                norm = torch.nn.utils.clip_grad_norm_(self.agents.parameters(), 10.0)
-                if norm > 10.0:
-                    grad_clipped.append(True)
-                else:
-                    grad_clipped.append(False)
-                grad_norms.append(norm.item())
-                self.optim.step()
 
-        print(
-            f"policy loss mean: {np.mean(losses_pi):.2f}, std: {np.std(losses_pi):.2f}"
-        )
-        print(f"value loss mean: {np.mean(losses_v):.2f}, std: {np.std(losses_v):.2f}")
-        print(f"ppo clip proportion: {np.mean(clip_ratios):.1%}")
-        print(f"grad clip proportion: {np.mean(grad_clipped):.1%}")
-        print(
-            f"grad norm mean: {np.mean(grad_norms):.2f}, std: {np.std(grad_norms):.2f}"
-        )
+                def grad_norm(module):
+                    with torch.no_grad():
+                        return torch.norm(
+                            torch.stack(
+                                [
+                                    torch.norm(p.grad.detach(), 2.0)
+                                    for p in module.parameters()
+                                    if p.grad is not None
+                                ]
+                            ),
+                            2.0,
+                        ).item()
+
+                norm = grad_norm(self.agents)
+
+                self.logger.log(
+                    grad_clipped=(norm > 10.0),
+                    grad_norm=norm,
+                    grad_norm_policy_encoder=grad_norm(self.agents.policy_encoder),
+                    grad_norm_value_encoder=grad_norm(self.agents.value_encoder),
+                    grad_norm_move_head=grad_norm(self.agents.move_head),
+                    grad_norm_throw_head=grad_norm(self.agents.throw_head),
+                    grad_norm_value_head=grad_norm(self.agents.value_head),
+                )
+                torch.nn.utils.clip_grad_norm_(self.agents.parameters(), 10.0)
+                self.optim.step()
 
         for _ in range(self.sleep_phases):
             pass
+
+        self.logger.step()
 
     # def evaluate(self):
     #     done = False
@@ -257,7 +279,7 @@ class Trainer:
         import time
 
         done = False
-        eval_env = self.env_fn(**self.env_kwargs, render=True)
+        eval_env = self.env_fn(**self.env_kwargs, render=True, logger=self.logger)
         obs = eval_env.reset()
         tot_rew = np.zeros(2)
         while not done:
@@ -274,12 +296,14 @@ def main():
         Agents(),
         FantasticBits,
         rollout_steps=4096,
-        lr=3e-4,
+        lr=1e-4,
         wake_phases=3,
         env_kwargs={"shape_snaffle_dist": True},
     )
-    for _ in range(250):
+    for _ in range(100):
         trainer.train()
+        trainer.logger.generate_plots()
+    print(trainer.logger.to_df())
 
 
 if __name__ == "__main__":

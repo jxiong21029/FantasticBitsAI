@@ -2,7 +2,6 @@ import sys
 import warnings
 
 import numpy as np
-import pygame
 
 from engine import POLES, Bludger, Point, Snaffle, Wizard, engine_step
 
@@ -18,8 +17,10 @@ MARGIN = 25
 
 
 class FantasticBits:
-    def __init__(self, shape_snaffle_dist=False, render=False, seed=None):
+    def __init__(self, shape_snaffle_dist=False, render=False, seed=None, logger=None):
         self.rng = np.random.default_rng(seed)
+        self.logger = logger
+
         self.shape_snaffle_dist = shape_snaffle_dist
         self.render = render
 
@@ -32,6 +33,8 @@ class FantasticBits:
         self.opponents: list[Wizard] = []
 
         if render:
+            import pygame
+
             self.screen = pygame.display.set_mode(
                 (16000 / SCALE + MARGIN * 2, 7500 / SCALE + MARGIN * 2)
             )
@@ -100,6 +103,7 @@ class FantasticBits:
         rng = self.rng
 
         self.t = 0
+        self.score = [0, 0]
         if rng.random() < 0.5:
             tot_snaffles = 5
         else:
@@ -145,6 +149,7 @@ class FantasticBits:
             else:
                 agent.thrust(agent.x + direction[0], agent.y + direction[1])
 
+        # TODO: re-enable opponents
         # for opponent in self.opponents:
         #     nearest_snaffle = min(self.snaffles, key=lambda s: s.distance2(opponent))
         #     if opponent.grab_cd == 2:
@@ -175,14 +180,20 @@ class FantasticBits:
                 # TODO: reward the agent which last affected the snaffle
                 closer_wizard = min(self.agents, key=lambda w: w.distance2(snaffle))
                 if closer_wizard is self.agents[0]:
-                    rewards[0] += 10
+                    rewards[0] += 3
                     rewards[1] += 1
                 else:
                     rewards[0] += 1
-                    rewards[1] += 10
+                    rewards[1] += 3
 
         self.t += 1
         done = len(self.snaffles) == 0 or self.t == 200
+
+        if done and self.logger is not None:
+            self.logger.log(
+                goals_scored=self.score[0],
+                episode_len=self.t,
+            )
 
         self.render_frame()
         return self.get_obs(), rewards, done
@@ -190,6 +201,8 @@ class FantasticBits:
     def render_frame(self):
         if not self.render:
             return
+
+        import pygame
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:

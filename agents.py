@@ -20,11 +20,14 @@ class Encoder(nn.Module):
         self.snaffle_prep = nn.Linear(SZ_SNAFFLE, d_model)
         self.bludger_prep = nn.Linear(SZ_BLUDGER, d_model)
 
+        norm = nn.LayerNorm(d_model)
+
         self.encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model, nhead=nhead, dim_feedforward=128, dropout=0
+                d_model, nhead=nhead, dim_feedforward=64, dropout=0
             ),
-            num_layers=2,
+            num_layers=1,
+            norm=norm,
         )
 
     def forward(self, obs, batch_idx=None):
