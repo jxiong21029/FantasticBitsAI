@@ -177,7 +177,6 @@ class FantasticBits:
             self.snaffles.remove(snaffle)
             self.score[team - 1] += 1
             if team == 1:
-                # TODO: reward the agent which last affected the snaffle
                 for i, wizard in enumerate(self.agents):
                     if snaffle.last_touched == wizard:
                         rewards[i] += 3

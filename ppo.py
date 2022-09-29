@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-import tqdm
 
 from agents import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
@@ -176,7 +175,8 @@ class Trainer:
 
     def collect_rollout(self):
         curr_ep_reward = 0
-        for t in tqdm.trange(self.buf.max_size):
+
+        for t in range(self.buf.max_size):
             action, logp = self.agents.step(self.env_obs)
             value = self.agents.predict_value(self.env_obs, None)
             next_obs, reward, done = self.env.step(action)
