@@ -1,51 +1,13 @@
-import math
-
 import numpy as np
-import scipy.signal
 import torch
 import tqdm
 
 from agents import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
+from utils import RunningMoments, discount_cumsum
 
 
 # adapted from SpinningUp PPO
-def discount_cumsum(x, discount):
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
-
-
-class RunningMoments:
-    """
-    Tracks running mean and variance
-    Adapted from github.com/MadryLab/implementation-matters, which took it from
-    github.com/joschu/modular_rl. Math in johndcook.com/blog/standard_deviation
-    """
-
-    def __init__(self):
-        self.n = 0
-        self.m = 0
-        self.s = 0
-
-    def push(self, x):
-        assert isinstance(x, float) or isinstance(x, int)
-        self.n += 1
-        if self.n == 1:
-            self.m = x
-        else:
-            old_m = self.m
-            self.m = old_m + (x - old_m) / self.n
-            self.s = self.s + (x - old_m) * (x - self.m)
-
-    def mean(self):
-        return self.m
-
-    def std(self):
-        if self.n > 1:
-            return math.sqrt(self.s / (self.n - 1))
-        else:
-            return self.m
-
-
 class Buffer:
     """
     A buffer for storing trajectories experienced by the agents interacting
@@ -235,9 +197,8 @@ class Trainer:
         grad_clipped = []
         grad_norms = []
         clip_ratios = []
-        # TODO code review and debugger run
-        # TODO probe environments
-        # TODO clip ratio, entropy
+        # TODO probe environments?
+        # TODO logging, entropy
         for _ in range(self.wake_phases):
             self.rng.shuffle(idx)
             for i in range(idx.shape[0] // self.minibatch_size):
@@ -293,8 +254,6 @@ class Trainer:
     #             actions = self.agents.step(obs)
 
     def evaluate_with_render(self):
-        import pygame
-        import sys
         import time
 
         done = False
@@ -302,12 +261,6 @@ class Trainer:
         obs = eval_env.reset()
         tot_rew = np.zeros(2)
         while not done:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:
-                    pygame.quit()
-                    pygame.display.quit()
-                    sys.exit()
-
             with torch.no_grad():
                 actions, _ = self.agents.step(obs)
             obs, rew, done = eval_env.step(actions)
