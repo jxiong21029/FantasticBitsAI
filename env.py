@@ -178,13 +178,11 @@ class FantasticBits:
             self.score[team - 1] += 1
             if team == 1:
                 # TODO: reward the agent which last affected the snaffle
-                closer_wizard = min(self.agents, key=lambda w: w.distance2(snaffle))
-                if closer_wizard is self.agents[0]:
-                    rewards[0] += 3
-                    rewards[1] += 1
-                else:
-                    rewards[0] += 1
-                    rewards[1] += 3
+                for i, wizard in enumerate(self.agents):
+                    if snaffle.last_touched == wizard:
+                        rewards[i] += 3
+                    else:
+                        rewards[i] += 1
 
         self.t += 1
         done = len(self.snaffles) == 0 or self.t == 200

@@ -239,6 +239,7 @@ class Snaffle(Entity):
     ):
         super().__init__(x, y, vx, vy, rad, mass, friction)
         self.grabbed = grabbed
+        self.last_touched = None
 
     def yeet(self, x, y, power=500):
         dx = x - self.x
@@ -294,6 +295,7 @@ class Snaffle(Entity):
                 self.vx = other.vx
                 self.vy = other.vy
 
+                self.last_touched = other
         else:
             super().bounce(other)
 

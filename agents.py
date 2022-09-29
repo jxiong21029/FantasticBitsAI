@@ -152,8 +152,9 @@ class Agents(nn.Module):
             values[i] = self.value_head(embed).item()
         return values
 
-    def logp(self, rollout, batch_idx):  # ->
+    def policy_forward(self, rollout, batch_idx):
         z = self.policy_encoder(rollout["obs"], batch_idx)  # S x B x 32
+        distrs = []
         ret = torch.zeros((batch_idx.shape[0], 2))
         for i in range(2):
             embed = z[i + 1]
@@ -167,11 +168,11 @@ class Agents(nn.Module):
             sigma = F.softplus(
                 logits[:, 2:] + self._std_offset.to(device=logits.device)
             )
-            distr = distributions.Normal(mu, sigma, validate_args=False)
+            distrs.append(distributions.Normal(mu, sigma, validate_args=False))
 
             actions_taken = rollout["act"]["target"][batch_idx, i]
-            ret[:, i] = distr.log_prob(actions_taken).sum(dim=1)
-        return ret
+            ret[:, i] = distrs[i].log_prob(actions_taken).sum(dim=1)
+        return ret, distrs
 
     def value_forward(self, rollout, batch_idx):
         z = self.value_encoder(rollout["obs"], batch_idx)  # S x B x 32
@@ -181,5 +182,5 @@ class Agents(nn.Module):
             ret[:, i] = self.value_head(embed).squeeze(1)  # B x 1  ->  B
         return ret
 
-    def value_forward_aux(self, rollout, batch_idx):
+    def aux_value_forward(self, rollout, batch_idx):
         pass

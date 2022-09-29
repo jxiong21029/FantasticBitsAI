@@ -57,7 +57,7 @@ class Buffer:
         for k in self.act_buf.keys():
             self.act_buf[k][self.ptr] = act[k]
 
-        self.discounted_rew_tot = 0.99 * self.discounted_rew_tot + rew
+        self.discounted_rew_tot = self.gamma * self.discounted_rew_tot + rew
         for i in range(2):
             self.rew_stats[i].push(self.discounted_rew_tot[i])
             self.rew_buf[self.ptr, i] = rew[i] / (self.rew_stats[i].std() + 1e-8)
@@ -139,29 +139,33 @@ class Trainer:
         env_fn,
         env_kwargs=None,
         lr=1e-3,
+        weight_decay=1e-4,
         rollout_steps=4096,
         gamma=0.99,
         gae_lambda=0.95,
         minibatch_size=64,
-        wake_phases=1,
-        sleep_phases=2,
+        epochs=3,
+        ppo_clip_coeff=0.2,
+        grad_clipping=10.0,
+        entropy_reg=1e-5,
         seed=None,
     ):
-        # agent.step(single obs) -> action, value, logp
-        # agent.predict_values(batch obs) -> values (2xB)
-        # agent.logp(batch obs) -> logps
-
         self.rng = np.random.default_rng(seed=seed)
         self.logger = Logger()
 
         self.agents = agents
-        self.optim = torch.optim.Adam(agents.parameters(), lr=lr, weight_decay=1e-4)
+        self.optim = torch.optim.Adam(
+            agents.parameters(), lr=lr, weight_decay=weight_decay
+        )
         self.buf = Buffer(
             size=rollout_steps, gamma=gamma, lam=gae_lambda, logger=self.logger
         )
         self.minibatch_size = minibatch_size
-        self.wake_phases = wake_phases
-        self.sleep_phases = sleep_phases
+        self.epochs = epochs
+
+        self.ppo_clip_coeff = ppo_clip_coeff
+        self.grad_clipping = grad_clipping
+        self.entropy_reg = entropy_reg
 
         if env_kwargs is None:
             env_kwargs = {}
@@ -200,40 +204,63 @@ class Trainer:
 
         idx = np.arange(self.buf.max_size)
 
-        # TODO logging policy entropy (add entropy reg?)
         # TODO hyperparameter tuning / evaluation framework
         # TODO architecture design: e.g. add relu, norm after preprocessors, restructure
         #  obs/action embeddings
         # TODO write a blog post about this
         # TODO boost performance w/ behavioral cloning + KL penalty finetuning
-        for _ in range(self.wake_phases):
+        for _ in range(self.epochs):
             self.rng.shuffle(idx)
             for i in range(idx.shape[0] // self.minibatch_size):
                 batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
 
                 logp_old = rollout["logp"][batch_idx]
-                logp = self.agents.logp(rollout, batch_idx)
+                logp, distrs = self.agents.policy_forward(rollout, batch_idx)
                 ratio = torch.exp(logp - logp_old)
 
                 adv = rollout["adv"][batch_idx]
                 norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-                clip_adv = torch.clamp(ratio, 0.8, 1.2) * norm_adv
+                clip_adv = (
+                    torch.clamp(ratio, 1 - self.ppo_clip_coeff, 1 + self.ppo_clip_coeff)
+                    * norm_adv
+                )
                 loss_pi = -(torch.min(ratio * norm_adv, clip_adv)).mean()
 
                 v_pred = self.agents.value_forward(rollout, batch_idx)
                 loss_v = ((v_pred - rollout["ret"][batch_idx]) ** 2).mean()
 
+                total_loss = loss_pi + loss_v
+
+                total_entropy = 0
+                if self.entropy_reg > 0:
+                    for d in distrs:
+                        mean_sq_norm = d.mean[:, 0] ** 2 + d.mean[:, 1] ** 2
+                        scaled_entropy = (
+                            torch.sum(
+                                torch.log(
+                                    2
+                                    * torch.pi
+                                    * (d.variance / mean_sq_norm.reshape(-1, 1))
+                                )
+                            )
+                            / batch_idx.shape[0]
+                            / 2
+                        )
+                        total_loss += -self.entropy_reg * scaled_entropy
+                        total_entropy += scaled_entropy.item() + 0.5
+
                 self.logger.log(
                     loss_pi=loss_pi.item(),
                     loss_v=loss_v.item(),
-                    ppo_clip_ratio=torch.gt(torch.abs(ratio - 1), 0.2)
+                    ppo_clip_ratio=torch.gt(torch.abs(ratio - 1), self.ppo_clip_coeff)
                     .float()
                     .mean()
                     .item(),
+                    scaled_entropy=total_entropy,
                 )
 
                 self.optim.zero_grad()
-                (loss_pi + loss_v).backward()
+                total_loss.backward()
 
                 def grad_norm(module):
                     with torch.no_grad():
@@ -251,7 +278,6 @@ class Trainer:
                 norm = grad_norm(self.agents)
 
                 self.logger.log(
-                    grad_clipped=(norm > 10.0),
                     grad_norm=norm,
                     grad_norm_policy_encoder=grad_norm(self.agents.policy_encoder),
                     grad_norm_value_encoder=grad_norm(self.agents.value_encoder),
@@ -259,11 +285,16 @@ class Trainer:
                     grad_norm_throw_head=grad_norm(self.agents.throw_head),
                     grad_norm_value_head=grad_norm(self.agents.value_head),
                 )
-                torch.nn.utils.clip_grad_norm_(self.agents.parameters(), 10.0)
+                if self.grad_clipping is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.agents.parameters(), self.grad_clipping
+                    )
+                    self.logger.log(
+                        grad_clipped=(norm > self.grad_clipping)
+                        if self.grad_clipping is not None
+                        else False,
+                    )
                 self.optim.step()
-
-        for _ in range(self.sleep_phases):
-            pass
 
         self.logger.step()
 
@@ -297,7 +328,7 @@ def main():
         FantasticBits,
         rollout_steps=4096,
         lr=1e-4,
-        wake_phases=3,
+        epochs=3,
         env_kwargs={"shape_snaffle_dist": True},
     )
     for _ in range(100):
