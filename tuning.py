@@ -22,9 +22,21 @@ class SearchNode:
     depth: int
     expanded: bool = False
 
+    def __hash__(self):
+        return hash(
+            tuple(self.config[k] for k in sorted(self.config.keys())) + (self.depth,)
+        )
+
+    def __eq__(self, other):
+        return self.config == other.config and self.depth == other.depth
+
+
+# TODO: IndependencyInjectionSearch?
+#   optimizes one dependent component at a time, coordinate-search-esque
+
 
 class LogBinarySearch(Searcher):
-    def __init__(self, search_space, depth, metric, mode, groups=None):
+    def __init__(self, search_space, depth, metric, mode):
         """
         expected input format example:
         search_space = {
@@ -35,8 +47,6 @@ class LogBinarySearch(Searcher):
         """
 
         super(LogBinarySearch, self).__init__(metric=metric, mode=mode)
-
-        self.groups = groups
 
         self.max_depth = depth
         self.grid_searches = {}
@@ -58,7 +68,7 @@ class LogBinarySearch(Searcher):
                 vals = v[space_type]
 
                 if space_type == "grid_search":
-                    self.grid_searches[k] = v[space_type]
+                    self.grid_searches[k] = vals
                     start_values.append(vals)
                 elif space_type == "log_binary_search":
                     if len(vals) <= 1 or len(vals) % 2 == 0:
@@ -75,29 +85,29 @@ class LogBinarySearch(Searcher):
                         exponents[i + 1] - exponents[i]
                         for i in range(len(exponents) - 1)
                     ]
-                    if (diff := min(diffs)) != max(diffs):
+                    if (diff := min(diffs)) == max(diffs):
+                        self.log_bin_scales[k] = diff
+                    else:
                         raise ValueError(
                             f"expected evenly spaced (logarithmically speaking) "
                             f"specification for log binary search, but received "
                             f"exponents {exponents} for key {k}"
                         )
-                    else:
-                        self.log_bin_scales[k] = diff
 
                     self.log_bin_sizes[k] = len(vals) // 2
                 else:
                     raise ValueError(f"unexpected search space: {space_type}")
 
         self.candidates = []
-        for spec in itertools.product(*start_values):
+        for cfg in itertools.product(*start_values):
             self.candidates.append(
-                SearchNode({k: v for k, v in zip(keys, spec)}, None, 0)
+                SearchNode({k: v for k, v in zip(keys, cfg)}, None, 0)
             )
 
         self.best_configs = {}
         self.best_scores = {}
         self.in_progress = {}
-        self.completed = set()
+        self.all_deployed = set()
 
     def _neighbors_of(self, config, new_depth):
         keys = []
@@ -111,15 +121,21 @@ class LogBinarySearch(Searcher):
             keys.append(k)
             values.append(
                 [
-                    10.0 ** (Fraction(math.log10(config[k])).limit_denominator(2 * (2 ** self.max_depth)) + c * self.log_bin_scales[k] / (2**new_depth))
+                    10.0
+                    ** (
+                        Fraction(math.log10(config[k])).limit_denominator(
+                            2 * (2**self.max_depth)
+                        )
+                        + c * self.log_bin_scales[k] / (2**new_depth)
+                    )
                     for c in range(-self.log_bin_sizes[k], self.log_bin_sizes[k] + 1)
                 ]
             )
-            assert len(values) == self.log_bin_sizes[k] * 2 + 1  # TODO remove
 
         for cfg in itertools.product(*values):
             yield {k: v for k, v in zip(keys, cfg)}
 
+    # TODO: make sure no repeats in the same depth, make sure yes repeats in diff depth
     def suggest(self, trial_id):
         self.candidates = [
             node
@@ -128,19 +144,21 @@ class LogBinarySearch(Searcher):
                 node.depth - 1 not in self.best_configs
                 or node.parent_config == self.best_configs[node.depth - 1]
             )
-            and not any(nd.config == node.config for nd in self.in_progress.values())
+            and node not in self.all_deployed
         ]
 
         if len(self.candidates) == 0:
-            possible_parents = [node for node in self.in_progress.values() if not node.expanded and node.depth < self.max_depth]
+            possible_parents = [
+                node
+                for node in self.in_progress.values()
+                if not node.expanded and node.depth < self.max_depth
+            ]
             if len(possible_parents) == 0:
                 return Searcher.FINISHED
             minimum_depth = min(node.depth for node in possible_parents)
             parent = random.choice(
                 [node for node in possible_parents if node.depth == minimum_depth]
             )
-
-            print(f">> expanding {parent} <<")
 
             parent.expanded = True
             for config in self._neighbors_of(parent.config, parent.depth + 1):
@@ -150,11 +168,13 @@ class LogBinarySearch(Searcher):
 
             return self.suggest(trial_id)
 
-        valid = [node for node in self.candidates if node.depth == self.candidates[0].depth]
+        valid = [
+            node for node in self.candidates if node.depth == self.candidates[0].depth
+        ]
         selected = random.choice(valid)
         self.candidates.remove(selected)
         self.in_progress[trial_id] = selected
-        print(f"<< suggesting {selected} >>")
+        self.all_deployed.add(selected)
         return selected.config
 
     def on_trial_complete(self, trial_id, result=None, error=False):
@@ -173,18 +193,27 @@ class LogBinarySearch(Searcher):
             self.best_scores[node.depth] = result[self.metric]
             self.best_configs[node.depth] = node.config
 
+            node.expanded = True
+            for config in self._neighbors_of(node.config, node.deth + 1):
+                self.candidates.append(SearchNode(config, node.config, node.depth + 1))
+
         del self.in_progress[trial_id]
 
 
-searcher = LogBinarySearch(
-    {
-        "lr": log_binary_search(1e-3, 1e-2, 1e-1),
-        "batch_size": grid_search(32, 64),
-        "n_layers": 2,
-    },
-    depth=2,
-    metric="val_acc",
-    mode="max",
-)
-for i in range(100):
-    searcher.suggest(str(i))
+def main():
+    searcher = LogBinarySearch(
+        {
+            "lr": log_binary_search(1e-3, 1e-2, 1e-1),
+            "batch_size": grid_search(32, 64),
+            "n_layers": 2,
+        },
+        depth=2,
+        metric="val_acc",
+        mode="max",
+    )
+    for i in range(100):
+        searcher.suggest(str(i))
+
+
+if __name__ == "__main__":
+    main()
