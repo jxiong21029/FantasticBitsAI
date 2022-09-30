@@ -2,6 +2,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from enum import Enum
+from typing import Union
 
 # collision handling logic adapted from
 # github.com/dreignier/fantastic-bits/blob/master/fantastic-bits.cpp
@@ -349,7 +350,7 @@ POLES = [
 @dataclass
 class Collision:
     a: Entity
-    b: Boundary or Entity
+    b: Union[Boundary, Entity]
     t: float
 
 

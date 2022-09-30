@@ -36,10 +36,9 @@ if __name__ == "__main__":
         ),
         run_config=air.RunConfig(
             name="tune_lr_l2",
-            local_dir="ray_results/"
+            local_dir="ray_results/",
         ),
     )
     results = tuner.fit()
     best_result = results.get_best_result()
     print(best_result.config, best_result.metrics)
-
