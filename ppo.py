@@ -298,13 +298,20 @@ class Trainer:
 
         self.logger.step()
 
-    # def evaluate(self):
-    #     done = False
-    #     eval_env = copy.deepcopy(self.env)
-    #     obs = eval_env.reset()
-    #     while not done:
-    #         with torch.no_grad():
-    #             actions = self.agents.step(obs)
+    def evaluate(self, num_episodes=50):
+        temp_logger = Logger()
+        eval_env = self.env_fn(**self.env_kwargs, logger=temp_logger)
+        for _ in range(num_episodes):
+            obs = eval_env.reset()
+            done = False
+            while not done:
+                with torch.no_grad():
+                    actions, _ = self.agents.step(obs)
+                obs, _, done = eval_env.step(actions)
+        temp_logger.step()
+        self.logger.cumulative_data.update(
+            {"eval_" + k: v for k, v in temp_logger.cumulative_data.items()}
+        )
 
     def evaluate_with_render(self):
         import time

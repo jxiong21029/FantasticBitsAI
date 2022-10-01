@@ -84,7 +84,7 @@ class Encoder(nn.Module):
             ret = self.encoder(x, src_key_padding_mask=padding_mask)  # S x B x 32
 
             if ret.isnan().any():
-                breakpoint()
+                raise ValueError
 
             return ret
 

@@ -4,7 +4,13 @@ import random
 from dataclasses import dataclass
 from fractions import Fraction
 
+import torch
+from ray import air, tune
 from ray.tune.search import Searcher
+
+from agents import Agents
+from env import FantasticBits
+from ppo import Trainer
 
 
 def log_binary_search(*values):
@@ -52,6 +58,7 @@ class LogBinarySearch(Searcher):
         keys = []
         start_values = []
 
+        has_binary = False
         for k, v in search_space.items():
             keys.append(k)
             if not isinstance(v, dict):
@@ -67,6 +74,7 @@ class LogBinarySearch(Searcher):
                     self.grid_searches[k] = vals
                     start_values.append(vals)
                 elif space_type == "log_binary_search":
+                    has_binary = True
                     if len(vals) <= 1 or len(vals) % 2 == 0:
                         raise ValueError(
                             f"log binary search specified with n={len(vals)} "
@@ -93,6 +101,9 @@ class LogBinarySearch(Searcher):
                     self.log_bin_sizes[k] = len(vals) // 2
                 else:
                     raise ValueError(f"unexpected search space: {space_type}")
+
+        if not has_binary:
+            self.max_depth = 0
 
         self.candidates = []
         for cfg in itertools.product(*start_values):
@@ -131,7 +142,6 @@ class LogBinarySearch(Searcher):
         for cfg in itertools.product(*values):
             yield {k: v for k, v in zip(keys, cfg)}
 
-    # TODO: make sure no repeats in the same depth, make sure yes repeats in diff depth
     def suggest(self, trial_id):
         self.candidates = [
             node
@@ -180,6 +190,10 @@ class LogBinarySearch(Searcher):
         return selected.config
 
     def on_trial_complete(self, trial_id, result=None, error=False):
+        if error:
+            del self.in_progress[trial_id]
+            return
+
         node = self.in_progress[trial_id]
         if (
             node.depth not in self.best_configs
@@ -195,9 +209,12 @@ class LogBinarySearch(Searcher):
             self.best_scores[node.depth] = result[self.metric]
             self.best_configs[node.depth] = node.config
 
-            node.expanded = True
-            for config in self._neighbors_of(node.config, node.depth + 1):
-                self.candidates.append(SearchNode(config, node.config, node.depth + 1))
+            if node.depth < self.max_depth:
+                node.expanded = True
+                for config in self._neighbors_of(node.config, node.depth + 1):
+                    self.candidates.append(
+                        SearchNode(config, node.config, node.depth + 1)
+                    )
 
         del self.in_progress[trial_id]
 
@@ -233,12 +250,11 @@ class IndependentComponentsSearch(Searcher):
         self._curr_group = 0
         self.id_to_config = {}
         self.best_score = None
+        self.best_config = None
 
         self._curr_searcher_ids = set()
         self._curr_searcher: LogBinarySearch = self._init_group()
 
-    # TODO: re-initialize subgroup defaults if better result found from a prev search
-    #   and the better result differs at a relevant key
     def _init_group(self):
         self._curr_searcher_ids.clear()
         search_subspace = {
@@ -267,12 +283,17 @@ class IndependentComponentsSearch(Searcher):
         return ret
 
     def on_trial_complete(self, trial_id, result=None, error=False):
+        if error:
+            self._curr_searcher.on_trial_complete(trial_id, result, error)
+            return
+
         if (
             self.best_score is None
             or (self.mode == "max" and result[self.metric] > self.best_score)
             or (self.mode == "min" and result[self.metric] < self.best_score)
         ):
             self.best_score = result[self.metric]
+            self.best_config = self.id_to_config[trial_id]
 
             config = self.id_to_config[trial_id]
             reinit = False
@@ -288,19 +309,95 @@ class IndependentComponentsSearch(Searcher):
             self._curr_searcher.on_trial_complete(trial_id, result, error)
 
 
+def train(config):
+    results = []
+    for run in range(3):
+        trainer = Trainer(
+            Agents(),
+            FantasticBits,
+            lr=config["lr"],
+            weight_decay=config["weight_decay"],
+            gamma=config["gamma"],
+            gae_lambda=config["gae_lambda"],
+            rollout_steps=config["rollout_steps"],
+            minibatch_size=config["minibatch_size"],
+            epochs=config["epochs"],
+            entropy_reg=config["entropy_reg"],
+            env_kwargs={"shape_snaffle_dist": True},
+        )
+
+        for i in range(101):
+            trainer.train()
+            if i % 20 == 0:
+                trainer.evaluate(num_episodes=100)
+                tune.report(
+                    **{k: v[-1] for k, v in trainer.logger.cumulative_data.items()}
+                )
+
+                torch.save(trainer.agents.state_dict(), f"./agents_{run}.pth")
+        results.append({k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
+    tune.report(
+        **{
+            "mo3_" + k: (results[0][k] + results[1][k] + results[2][k]) / 3
+            for k in results[0].keys()
+        }
+    )
+
+
 def main():
-    searcher = LogBinarySearch(
-        {
-            "lr": log_binary_search(1e-3, 1e-2, 1e-1),
-            "batch_size": grid_search(32, 64),
-            "n_layers": 2,
+    import os
+
+    os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
+
+    search_alg = IndependentComponentsSearch(
+        search_space={
+            "lr": log_binary_search(1e-4, 1e-3, 1e-2),
+            "weight_decay": log_binary_search(1e-7, 1e-5, 1e-3),
+            "gamma": grid_search(0.95, 0.97, 0.98, 0.99, 0.995),
+            "gae_lambda": grid_search(0.5, 0.8, 0.9, 0.95, 0.97),
+            "rollout_steps": 4096,
+            "minibatch_size": grid_search(32, 64, 128),
+            "epochs": grid_search(1, 2, 3, 4, 5),
+            "entropy_reg": log_binary_search(1e-7, 1e-5, 1e-3),
         },
         depth=2,
-        metric="val_acc",
+        defaults={
+            "lr": 1e-4,
+            "weight_decay": 1e-4,
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "rollout_steps": 4096,
+            "minibatch_size": 64,
+            "epochs": 3,
+            "entropy_reg": 1e-5,
+        },
+        components=(
+            ("lr", "weight_decay"),
+            ("lr", "minibatch_size"),
+            ("lr", "epochs"),
+            ("gamma", "gae_lambda"),
+        ),
+        metric="mo3_eval_goals_scored_mean",
         mode="max",
     )
-    for i in range(100):
-        searcher.suggest(str(i))
+
+    tuner = tune.Tuner(
+        train,
+        tune_config=tune.TuneConfig(
+            num_samples=-1,
+            search_alg=search_alg,
+            max_concurrent_trials=8,
+        ),
+        run_config=air.RunConfig(
+            name="full_tune",
+            local_dir="ray_results/",
+            verbose=1,
+        ),
+    )
+    tuner.fit()
+
+    print("best score:", search_alg.best_score)
+    print("best config:", search_alg.best_config)
 
 
 if __name__ == "__main__":
