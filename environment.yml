@@ -4,7 +4,6 @@ channels:
   - conda-forge
 dependencies:
   - black
-  - cudatoolkit=11.3
   - isort
   - matplotlib
   - numpy
@@ -19,5 +18,5 @@ dependencies:
   - tqdm
   - pip
   - pip:
-      - ray[tune]
       - pygame
+      - ray[tune]

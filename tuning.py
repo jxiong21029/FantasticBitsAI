@@ -31,10 +31,6 @@ class SearchNode:
         return self.config == other.config and self.depth == other.depth
 
 
-# TODO: IndependencyInjectionSearch?
-#   optimizes one dependent component at a time, coordinate-search-esque
-
-
 class LogBinarySearch(Searcher):
     def __init__(self, search_space, depth, metric, mode):
         """
@@ -46,7 +42,7 @@ class LogBinarySearch(Searcher):
         }
         """
 
-        super(LogBinarySearch, self).__init__(metric=metric, mode=mode)
+        super().__init__(metric=metric, mode=mode)
 
         self.max_depth = depth
         self.grid_searches = {}
@@ -143,6 +139,12 @@ class LogBinarySearch(Searcher):
             if (
                 node.depth - 1 not in self.best_configs
                 or node.parent_config == self.best_configs[node.depth - 1]
+                or node.parent_config
+                in [
+                    n.config
+                    for n in self.in_progress.values()
+                    if n.depth == node.depth - 1
+                ]
             )
             and node not in self.all_deployed
         ]
@@ -194,10 +196,96 @@ class LogBinarySearch(Searcher):
             self.best_configs[node.depth] = node.config
 
             node.expanded = True
-            for config in self._neighbors_of(node.config, node.deth + 1):
+            for config in self._neighbors_of(node.config, node.depth + 1):
                 self.candidates.append(SearchNode(config, node.config, node.depth + 1))
 
         del self.in_progress[trial_id]
+
+
+class IndependentComponentsSearch(Searcher):
+    def __init__(
+        self,
+        search_space: dict,
+        depth: int,
+        defaults: dict,
+        components: tuple,
+        metric: str,
+        mode: str,
+        repeat=1,
+    ):
+        if search_space.keys() != defaults.keys():
+            raise ValueError("expected search_space and defaults to have same keys")
+        for comp in components:
+            for k in comp:
+                if k not in search_space.keys():
+                    raise ValueError("expected component keys to be in search_space")
+
+        super().__init__(metric=metric, mode=mode)
+        self.depth = depth
+
+        filled_components = components + tuple(
+            k for k in search_space.keys() if not any(k in comp for comp in components)
+        )
+        self.components = filled_components * repeat
+        self.search_space = search_space
+        self.defaults = defaults
+
+        self._curr_group = 0
+        self.id_to_config = {}
+        self.best_score = None
+
+        self._curr_searcher_ids = set()
+        self._curr_searcher: LogBinarySearch = self._init_group()
+
+    # TODO: re-initialize subgroup defaults if better result found from a prev search
+    #   and the better result differs at a relevant key
+    def _init_group(self):
+        self._curr_searcher_ids.clear()
+        search_subspace = {
+            k: (v if k in self.components[self._curr_group] else self.defaults[k])
+            for k, v in self.search_space.items()
+        }
+        return LogBinarySearch(
+            search_space=search_subspace,
+            depth=self.depth,
+            metric=self.metric,
+            mode=self.mode,
+        )
+
+    def suggest(self, trial_id):
+        ret = self._curr_searcher.suggest(trial_id)
+        self._curr_searcher_ids.add(trial_id)
+
+        if ret == Searcher.FINISHED:
+            self._curr_group += 1
+            if self._curr_group == len(self.components):
+                return Searcher.FINISHED
+            self._curr_searcher = self._init_group()
+            ret = self._curr_searcher.suggest(trial_id)
+
+        self.id_to_config[trial_id] = ret
+        return ret
+
+    def on_trial_complete(self, trial_id, result=None, error=False):
+        if (
+            self.best_score is None
+            or (self.mode == "max" and result[self.metric] > self.best_score)
+            or (self.mode == "min" and result[self.metric] < self.best_score)
+        ):
+            self.best_score = result[self.metric]
+
+            config = self.id_to_config[trial_id]
+            reinit = False
+            for k in self.search_space.keys():
+                if config[k] != self.defaults[k]:
+                    self.defaults[k] = config[k]
+                    if k not in self.components[self._curr_group]:
+                        reinit = True
+            if reinit:
+                self._curr_searcher = self._init_group()
+
+        if trial_id in self._curr_searcher_ids:
+            self._curr_searcher.on_trial_complete(trial_id, result, error)
 
 
 def main():
