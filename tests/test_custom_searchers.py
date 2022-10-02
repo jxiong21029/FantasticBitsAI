@@ -1,5 +1,6 @@
 import itertools
 import math
+import random
 from fractions import Fraction
 
 import numpy as np
@@ -7,17 +8,20 @@ import pytest
 
 from tuning import (
     IndependentComponentsSearch,
-    LogBinarySearch,
+    IntervalHalvingSearch,
     grid_search,
-    log_binary_search,
+    log_halving_search,
+    q_log_halving_search,
+    q_uniform_halving_search,
+    uniform_halving_search,
 )
 
 
 @pytest.fixture
 def base_searcher():
-    return LogBinarySearch(
+    return IntervalHalvingSearch(
         {
-            "lr": log_binary_search(1e-3, 1e-2, 1e-1, 1e0, 1e1),
+            "lr": log_halving_search(1e-3, 1e-2, 1e-1, 1e0, 1e1),
             "batch_size": grid_search(32, 64),
             "n_layers": 2,
         },
@@ -27,7 +31,7 @@ def base_searcher():
     )
 
 
-def test_nondecreasing_depth(base_searcher):
+def test_log_halving_nondecreasing_depth(base_searcher):
     suggestions = [base_searcher.suggest(str(i)) for i in range(100)]
     suggestions = [s for s in suggestions if isinstance(s, dict)]
     assert len(suggestions) == len(base_searcher.all_deployed)
@@ -52,7 +56,7 @@ def test_nondecreasing_depth(base_searcher):
     )
 
 
-def test_denominators_match_depth(base_searcher):
+def test_log_halving_denominators_match_depth(base_searcher):
     for i in range(100):
         base_searcher.suggest(str(i))
 
@@ -75,7 +79,7 @@ def test_denominators_match_depth(base_searcher):
     assert largest_2 == 4
 
 
-def test_does_not_expand_worse_result(base_searcher):
+def test_log_halving_does_not_expand_worse_result(base_searcher):
     for i in range(10):
         suggestion = base_searcher.suggest(str(i))
         if suggestion["lr"] == 1e-3:
@@ -89,7 +93,7 @@ def test_does_not_expand_worse_result(base_searcher):
     assert {"lr": 1e-4, "batch_size": 32, "n_layers": 2} not in suggestions
 
 
-def test_only_expands_best_result(base_searcher):
+def test_log_halving_only_expands_best_result(base_searcher):
     found = False
     for i in range(10):
         suggestion = base_searcher.suggest(str(i))
@@ -116,23 +120,34 @@ def test_only_expands_best_result(base_searcher):
         assert depth_1_suggestions[i]["batch_size"] == cfg[1]
 
 
-# def test_log_binary_retroactive_cancel(base_searcher):
-#     s0 = base_searcher.suggest("0")
-#     base_searcher.on_trial_complete("0", {"val_acc": 0.8})
-#     for i in range(1, 10):
-#         base_searcher.suggest(str(i))
-#
-#     for i in range(11, 15):
-#         s = base_searcher.suggest(str(i))
-#         if base_searcher.in_progress
+@pytest.fixture
+def searcher_2():
+    return IntervalHalvingSearch(
+        search_space={
+            "lr": log_halving_search(1e-4, 1e-3, 1e-2),
+            "batch_size": q_log_halving_search(32, 64, 128),
+            "dropout": uniform_halving_search(0.1, 0.2, 0.3),
+            "n_layers": q_uniform_halving_search(2, 8, 14),
+        },
+        depth=2,
+        metric="val_loss",
+        mode="min",
+    )
+
+
+def test_special_search_spaces_suggestion_count(searcher_2):
+    for i in range(3**5):
+        assert isinstance(searcher_2.suggest(str(i)), dict)
+        searcher_2.on_trial_complete(str(i), {"val_loss": random.random()})
+    assert not isinstance(searcher_2.suggest("243"), dict)
 
 
 def test_independent_components_search():
     searcher = IndependentComponentsSearch(
         search_space={
-            "lr": log_binary_search(1e-5, 1e-3, 1e-1),
+            "lr": log_halving_search(1e-5, 1e-3, 1e-1),
             "batch_size": grid_search(32, 64),
-            "weight_decay": log_binary_search(1e-5, 1e-3, 1e-1),
+            "weight_decay": log_halving_search(1e-5, 1e-3, 1e-1),
             "dropout": grid_search(0.1, 0.2, 0.3),
             "n_layers": 2,
         },
@@ -177,3 +192,35 @@ def test_independent_components_search():
         if s["lr"] != s0["lr"]:
             searcher.on_trial_complete(str(i + 2), {"val_acc": 0.999})
     assert len(searcher._curr_searcher.in_progress) == 0
+
+
+def test_independent_components_no_wasted_sweeps():
+    searcher = IndependentComponentsSearch(
+        {
+            "a": 1,
+            "b": 1,
+            "c": grid_search(1, 2),
+            "d": grid_search(1, 2, 3),
+            "e": grid_search(1, 2, 3, 4, 5),
+            "f": log_halving_search(1e-3, 1e-2, 1e-1),
+        },
+        depth=1,
+        defaults={
+            "a": 1,
+            "b": 1,
+            "c": 2,
+            "d": 2,
+            "e": 3,
+            "f": 1e-2,
+        },
+        components=(("c",), ("d", "e")),
+        metric="whatever",
+        mode="max",
+        repeat=2,
+    )
+
+    suggestions = []
+    for i in range(100):
+        suggestions.append(searcher.suggest(str(i)))
+    suggestions = [s for s in suggestions if isinstance(s, dict)]
+    assert len(suggestions) == 34

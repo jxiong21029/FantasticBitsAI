@@ -1,8 +1,8 @@
 import itertools
 import math
 import random
+from collections import defaultdict
 from dataclasses import dataclass
-from fractions import Fraction
 
 import torch
 from ray import air, tune
@@ -13,11 +13,23 @@ from env import FantasticBits
 from ppo import Trainer
 
 
-def log_binary_search(*values):
-    return {"log_binary_search": values}
+def log_halving_search(*values):  # could be used for learning rate
+    return {"log_halving_search": values}
 
 
-def grid_search(*values):
+def q_log_halving_search(*values):  # could be used for batch size
+    return {"q_log_halving_search": values}
+
+
+def uniform_halving_search(*values):  # could be used for dropout
+    return {"uniform_halving_search": values}
+
+
+def q_uniform_halving_search(*values):  # could be used for model depth
+    return {"q_uniform_halving_search": values}
+
+
+def grid_search(*values):  # could be used for everything else
     return {"grid_search": values}
 
 
@@ -37,12 +49,12 @@ class SearchNode:
         return self.config == other.config and self.depth == other.depth
 
 
-class LogBinarySearch(Searcher):
+class IntervalHalvingSearch(Searcher):
     def __init__(self, search_space, depth, metric, mode):
         """
         expected input format example:
         search_space = {
-            "lr": log_binary_search(1e-3, 1e-2, 1e-1),
+            "lr": log_halving_search(1e-3, 1e-2, 1e-1),
             "batch_size": grid_search(32, 64, 128),
             "weight_decay": 1e-5,
         }
@@ -52,63 +64,101 @@ class LogBinarySearch(Searcher):
 
         self.max_depth = depth
         self.grid_searches = {}
-        self.log_bin_scales = {}
-        self.log_bin_sizes = {}
+        self.keys = list(search_space.keys())
 
-        keys = []
+        self.neighbors = defaultdict(dict)
+
         start_values = []
 
-        has_binary = False
-        for k, v in search_space.items():
-            keys.append(k)
-            if not isinstance(v, dict):
-                self.grid_searches[k] = [v]
-                start_values.append([v])
+        has_halving = False
+        for k in self.keys:
+            specification = search_space[k]
+            if not isinstance(specification, dict):
+                self.grid_searches[k] = [specification]
+                start_values.append([specification])
+                continue
+
+            assert len(specification) == 1
+
+            space_type = list(specification.keys())[0]
+            vals = specification[space_type]
+            start_values.append(vals)
+
+            if space_type == "grid_search":
+                self.grid_searches[k] = vals
+                continue
+
+            assert space_type in (
+                "log_halving_search",
+                "q_log_halving_search",
+                "uniform_halving_search",
+                "q_uniform_halving_search",
+            )
+            assert len(vals) >= 3 and len(vals) % 2 == 1
+
+            has_halving = True
+
+            depth_vals = [sorted(vals)]
+            sz = len(vals) // 2
+            if "log" in space_type:
+                base_factor = vals[1] / vals[0]
+                for d in range(1, self.max_depth + 1):
+                    factor = math.pow(base_factor, math.pow(2, -d))
+                    depth_vals.append(
+                        [
+                            depth_vals[d - 1][0] / math.pow(factor, i + 1)
+                            for i in reversed(range(sz))
+                        ]
+                    )
+                    for entry in depth_vals[d - 1][:-1]:
+                        depth_vals[d].append(entry)
+                        depth_vals[d].append(entry * factor)
+                    depth_vals[d].extend(
+                        depth_vals[d - 1][-1] * math.pow(factor, i)
+                        for i in range(sz + 1)
+                    )
             else:
-                assert len(v) == 1
+                base_diff = vals[1] - vals[0]
+                for d in range(1, self.max_depth + 1):
+                    diff = base_diff * math.pow(2, -d)
+                    depth_vals.append(
+                        [
+                            depth_vals[d - 1][0] - diff * (i + 1)
+                            for i in reversed(range(sz))
+                        ]
+                    )
+                    for entry in depth_vals[d - 1][:-1]:
+                        depth_vals[d].append(entry)
+                        depth_vals[d].append(entry + diff)
+                    depth_vals[d].extend(
+                        depth_vals[d - 1][-1] + diff * i for i in range(sz + 1)
+                    )
 
-                space_type = list(v.keys())[0]
-                vals = v[space_type]
+            if space_type.startswith("q"):
+                for d in range(self.max_depth + 1):
+                    depth_vals[d] = [round(entry) for entry in depth_vals[d]]
 
-                if space_type == "grid_search":
-                    self.grid_searches[k] = vals
-                    start_values.append(vals)
-                elif space_type == "log_binary_search":
-                    has_binary = True
-                    if len(vals) <= 1 or len(vals) % 2 == 0:
-                        raise ValueError(
-                            f"log binary search specified with n={len(vals)} "
-                            f"values, but expected n to be both odd and >= 3"
+            for d in range(self.max_depth):
+                for entry in depth_vals[d]:
+                    if "log" in space_type:
+                        candidates = sorted(
+                            depth_vals[d + 1], key=lambda v: abs(math.log(v / entry))
                         )
-                    start_values.append(vals)
-
-                    exponents = [
-                        Fraction(math.log10(val)).limit_denominator(2) for val in vals
-                    ]
-                    diffs = [
-                        exponents[i + 1] - exponents[i]
-                        for i in range(len(exponents) - 1)
-                    ]
-                    if (diff := min(diffs)) == max(diffs):
-                        self.log_bin_scales[k] = diff
                     else:
-                        raise ValueError(
-                            f"expected evenly spaced (logarithmically speaking) "
-                            f"specification for log binary search, but received "
-                            f"exponents {exponents} for key {k}"
+                        candidates = sorted(
+                            depth_vals[d + 1], key=lambda v: abs(v - entry)
                         )
+                    self.neighbors[k][(entry, d)] = sorted(
+                        set(candidates[: 2 * sz + 1])
+                    )
 
-                    self.log_bin_sizes[k] = len(vals) // 2
-                else:
-                    raise ValueError(f"unexpected search space: {space_type}")
-
-        if not has_binary:
+        if not has_halving:
             self.max_depth = 0
 
         self.candidates = []
         for cfg in itertools.product(*start_values):
             self.candidates.append(
-                SearchNode({k: v for k, v in zip(keys, cfg)}, None, 0)
+                SearchNode({k: v for k, v in zip(self.keys, cfg)}, None, 0)
             )
 
         self.best_configs = {}
@@ -116,31 +166,17 @@ class LogBinarySearch(Searcher):
         self.in_progress = {}
         self.all_deployed = set()
 
-    def _neighbors_of(self, config, new_depth):
-        keys = []
+    def config_neighbors(self, config, new_depth):
         values = []
 
-        for k, v in self.grid_searches.items():
-            keys.append(k)
-            values.append(v)
-
-        for k, p in self.log_bin_scales.items():
-            keys.append(k)
-            values.append(
-                [
-                    10.0
-                    ** (
-                        Fraction(math.log10(config[k])).limit_denominator(
-                            2 * (2**self.max_depth)
-                        )
-                        + c * self.log_bin_scales[k] / (2**new_depth)
-                    )
-                    for c in range(-self.log_bin_sizes[k], self.log_bin_sizes[k] + 1)
-                ]
-            )
+        for k in self.keys:
+            if k in self.grid_searches:
+                values.append(self.grid_searches[k])
+            else:
+                values.append(self.neighbors[k][(config[k], new_depth - 1)])
 
         for cfg in itertools.product(*values):
-            yield {k: v for k, v in zip(keys, cfg)}
+            yield {k: v for k, v in zip(self.keys, cfg)}
 
     def suggest(self, trial_id):
         self.candidates = [
@@ -173,7 +209,7 @@ class LogBinarySearch(Searcher):
             )
 
             parent.expanded = True
-            for config in self._neighbors_of(parent.config, parent.depth + 1):
+            for config in self.config_neighbors(parent.config, parent.depth + 1):
                 self.candidates.append(
                     SearchNode(config, parent.config, parent.depth + 1)
                 )
@@ -211,7 +247,7 @@ class LogBinarySearch(Searcher):
 
             if node.depth < self.max_depth:
                 node.expanded = True
-                for config in self._neighbors_of(node.config, node.depth + 1):
+                for config in self.config_neighbors(node.config, node.depth + 1):
                     self.candidates.append(
                         SearchNode(config, node.config, node.depth + 1)
                     )
@@ -240,10 +276,7 @@ class IndependentComponentsSearch(Searcher):
         super().__init__(metric=metric, mode=mode)
         self.depth = depth
 
-        filled_components = components + tuple(
-            k for k in search_space.keys() if not any(k in comp for comp in components)
-        )
-        self.components = filled_components * repeat
+        self.components = components * repeat
         self.search_space = search_space
         self.defaults = defaults
 
@@ -251,9 +284,10 @@ class IndependentComponentsSearch(Searcher):
         self.id_to_config = {}
         self.best_score = None
         self.best_config = None
+        self.done = False
 
         self._curr_searcher_ids = set()
-        self._curr_searcher: LogBinarySearch = self._init_group()
+        self._curr_searcher: IntervalHalvingSearch = self._init_group()
 
     def _init_group(self):
         self._curr_searcher_ids.clear()
@@ -261,7 +295,7 @@ class IndependentComponentsSearch(Searcher):
             k: (v if k in self.components[self._curr_group] else self.defaults[k])
             for k, v in self.search_space.items()
         }
-        return LogBinarySearch(
+        return IntervalHalvingSearch(
             search_space=search_subspace,
             depth=self.depth,
             metric=self.metric,
@@ -269,22 +303,26 @@ class IndependentComponentsSearch(Searcher):
         )
 
     def suggest(self, trial_id):
+        if self.done:
+            return Searcher.FINISHED
         ret = self._curr_searcher.suggest(trial_id)
-        self._curr_searcher_ids.add(trial_id)
 
         if ret == Searcher.FINISHED:
             self._curr_group += 1
             if self._curr_group == len(self.components):
+                self.done = True
                 return Searcher.FINISHED
             self._curr_searcher = self._init_group()
             ret = self._curr_searcher.suggest(trial_id)
 
+        self._curr_searcher_ids.add(trial_id)
         self.id_to_config[trial_id] = ret
         return ret
 
     def on_trial_complete(self, trial_id, result=None, error=False):
         if error:
-            self._curr_searcher.on_trial_complete(trial_id, result, error)
+            if trial_id in self._curr_searcher_ids:
+                self._curr_searcher.on_trial_complete(trial_id, result, error)
             return
 
         if (
@@ -310,6 +348,11 @@ class IndependentComponentsSearch(Searcher):
 
 
 def train(config):
+    budget = 200 * 4096
+    iters = 1 + round(budget / config["rollout_steps"])
+    steps_per_report = 20 * 4096
+    iters_per_report = round(steps_per_report / config["rollout_steps"])
+
     results = []
     for run in range(3):
         trainer = Trainer(
@@ -326,9 +369,9 @@ def train(config):
             env_kwargs={"shape_snaffle_dist": True},
         )
 
-        for i in range(101):
+        for i in range(iters):
             trainer.train()
-            if i % 20 == 0:
+            if i % iters_per_report == 0:
                 trainer.evaluate(num_episodes=100)
                 tune.report(
                     **{k: v[-1] for k, v in trainer.logger.cumulative_data.items()}
@@ -351,31 +394,33 @@ def main():
 
     search_alg = IndependentComponentsSearch(
         search_space={
-            "lr": log_binary_search(1e-4, 1e-3, 1e-2),
-            "weight_decay": log_binary_search(1e-7, 1e-5, 1e-3),
+            "lr": log_halving_search(1e-4, 1e-3, 1e-2),
+            "minibatch_size": q_log_halving_search(32, 128, 512),
+            "weight_decay": log_halving_search(1e-7, 1e-5, 1e-3),
+            "epochs": grid_search(1, 2, 3, 4, 5),
             "gamma": grid_search(0.95, 0.97, 0.98, 0.99, 0.995),
             "gae_lambda": grid_search(0.5, 0.8, 0.9, 0.95, 0.97),
-            "rollout_steps": 4096,
-            "minibatch_size": grid_search(32, 64, 128),
-            "epochs": grid_search(1, 2, 3, 4, 5),
-            "entropy_reg": log_binary_search(1e-7, 1e-5, 1e-3),
+            "entropy_reg": log_halving_search(1e-7, 1e-5, 1e-3),
+            "rollout_steps": grid_search(1024, 2048, 4096, 8192),
         },
-        depth=2,
+        depth=1,
         defaults={
             "lr": 1e-4,
+            "minibatch_size": 64,
             "weight_decay": 1e-4,
+            "epochs": 3,
             "gamma": 0.99,
             "gae_lambda": 0.95,
-            "rollout_steps": 4096,
-            "minibatch_size": 64,
-            "epochs": 3,
             "entropy_reg": 1e-5,
+            "rollout_steps": 4096,
         },
         components=(
-            ("lr", "weight_decay"),
             ("lr", "minibatch_size"),
-            ("lr", "epochs"),
+            ("weight_decay",),
+            ("epochs",),
             ("gamma", "gae_lambda"),
+            ("entropy_reg",),
+            ("rollout_steps",),
         ),
         metric="mo3_eval_goals_scored_mean",
         mode="max",
@@ -389,7 +434,7 @@ def main():
             max_concurrent_trials=8,
         ),
         run_config=air.RunConfig(
-            name="full_tune",
+            name="full_tune_2",
             local_dir="ray_results/",
             verbose=1,
         ),
