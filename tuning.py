@@ -61,7 +61,7 @@ class IntervalHalvingSearch(Searcher):
         """
 
         super().__init__(metric=metric, mode=mode)
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng(seed=seed)
 
         self.max_depth = depth
         self.grid_searches = {}
@@ -266,7 +266,7 @@ class IndependentComponentsSearch(Searcher):
         metric: str,
         mode: str,
         repeat=1,
-        seed=None
+        seed=None,
     ):
         if search_space.keys() != defaults.keys():
             raise ValueError("expected search_space and defaults to have same keys")
@@ -340,7 +340,7 @@ class IndependentComponentsSearch(Searcher):
             self.best_score[trial_comp] = score
             self.best_config[trial_comp] = config
 
-            if trial_comp < self.curr_comp:
+            if trial_comp <= self.curr_comp:
                 reinit = False
                 for k in self.search_space.keys():
                     if config[k] != self.defaults[k]:
@@ -374,7 +374,11 @@ def train(config):
             minibatch_size=config["minibatch_size"],
             epochs=config["epochs"],
             entropy_reg=config["entropy_reg"],
-            env_kwargs={"shape_snaffle_dist": True},
+            env_kwargs={
+                "bludgers_enabled": False,
+                "opponents_enabled": False,
+                "shape_snaffle_dist": True,
+            },
         )
 
         for i in range(iters):
@@ -442,7 +446,7 @@ def main():
             max_concurrent_trials=8,
         ),
         run_config=air.RunConfig(
-            name="full_tune_2",
+            name="full_tune_3",
             local_dir="ray_results/",
             verbose=1,
         ),

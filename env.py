@@ -17,10 +17,20 @@ MARGIN = 25
 
 
 class FantasticBits:
-    def __init__(self, shape_snaffle_dist=False, render=False, seed=None, logger=None):
-        self.rng = np.random.default_rng(seed)
+    def __init__(
+        self,
+        bludgers_enabled=True,
+        opponents_enabled=True,
+        shape_snaffle_dist=False,
+        render=False,
+        seed=None,
+        logger=None,
+    ):
+        self.rng = np.random.default_rng(seed=seed)
         self.logger = logger
 
+        self.bludgers_enabled = bludgers_enabled
+        self.opponents_enabled = opponents_enabled
         self.shape_snaffle_dist = shape_snaffle_dist
         self.render = render
 
@@ -149,16 +159,19 @@ class FantasticBits:
             else:
                 agent.thrust(agent.x + direction[0], agent.y + direction[1])
 
-        # TODO: re-enable opponents
-        # for opponent in self.opponents:
-        #     nearest_snaffle = min(self.snaffles, key=lambda s: s.distance2(opponent))
-        #     if opponent.grab_cd == 2:
-        #         nearest_snaffle.yeet(0, 3750)
-        #     else:
-        #         opponent.thrust(nearest_snaffle.x, nearest_snaffle.y)
+        if self.opponents_enabled:
+            for opponent in self.opponents:
+                nearest_snaffle = min(
+                    self.snaffles, key=lambda s: s.distance2(opponent)
+                )
+                if opponent.grab_cd == 2:
+                    nearest_snaffle.yeet(0, 3750)
+                else:
+                    opponent.thrust(nearest_snaffle.x, nearest_snaffle.y)
 
-        # for bludger in self.bludgers:
-        #     bludger.bludge(self.agents + self.opponents)
+        if self.bludgers_enabled:
+            for bludger in self.bludgers:
+                bludger.bludge(self.agents + self.opponents)
 
         total_snaffle_dist = sum(s.distance(Point(16000, 3750)) for s in self.snaffles)
 

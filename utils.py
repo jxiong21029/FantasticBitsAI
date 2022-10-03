@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.signal
+import torch
 
 
 # adapted from SpinningUp PPO
@@ -120,3 +121,17 @@ class Logger:
                     fname_prefix += "_"
                 fig.savefig(f"plotgen/{fname_prefix}{name}.png")
             plt.close(fig)
+
+
+def grad_norm(module):
+    with torch.no_grad():
+        return torch.norm(
+            torch.stack(
+                [
+                    torch.norm(p.grad.detach(), 2.0)
+                    for p in module.parameters()
+                    if p.grad is not None
+                ]
+            ),
+            2.0,
+        ).item()

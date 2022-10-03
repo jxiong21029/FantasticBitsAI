@@ -139,7 +139,7 @@ def test_special_search_spaces_suggestion_count(searcher_2):
     for i in range(3**5):
         assert isinstance(searcher_2.suggest(str(i)), dict)
         searcher_2.on_trial_complete(str(i), {"val_loss": random.random()})
-    assert not isinstance(searcher_2.suggest("243"), dict)
+    assert not isinstance(searcher_2.suggest("last"), dict)
 
 
 def test_independent_components_search():
@@ -167,7 +167,7 @@ def test_independent_components_search():
             metric="val_acc",
             mode="max",
             repeat=2,
-            seed=2**(seed // 2) + seed
+            seed=2**seed + seed,
         )
         s0 = searcher.suggest("0")
         s1 = searcher.suggest("1")
@@ -206,7 +206,7 @@ def test_independent_components_search():
 def test_independent_components_no_wasted_sweeps():
     searcher = IndependentComponentsSearch(
         {
-            "a": 1,
+            "a": q_uniform_halving_search(1, 2, 3),
             "b": 1,
             "c": grid_search(1, 2),
             "d": grid_search(1, 2, 3),
@@ -233,3 +233,41 @@ def test_independent_components_no_wasted_sweeps():
         suggestions.append(searcher.suggest(str(i)))
     suggestions = [s for s in suggestions if isinstance(s, dict)]
     assert len(suggestions) == 34
+
+
+def test_old_component_new_best_override():
+    for seed in range(10):
+        searcher = IndependentComponentsSearch(
+            {
+                "a": grid_search(1, 2, 3),
+                "b": log_halving_search(1e-3, 1e-2, 1e-1),
+                "c": grid_search(1, 2, 3),
+            },
+            depth=1,
+            defaults={"a": 2, "b": 1e-2, "c": 3},
+            components=(("a",), ("b",), ("c",)),
+            metric="valid_acc",
+            mode="max",
+            seed=2**seed + seed,
+        )
+
+        for i in range(3):
+            searcher.suggest(f"a{i}")
+        searcher.on_trial_complete("a0", {"valid_acc": 0.9})
+        assert searcher.curr_comp == 0
+
+        for i in range(6):
+            searcher.suggest(f"b{i}")
+            searcher.on_trial_complete(f"b{i}", {"valid_acc": 0})
+        assert searcher.curr_comp == 1
+
+        searcher.suggest("c0")
+        assert searcher.curr_comp == 2
+
+        searcher.on_trial_complete("a1", {"valid_acc": 0.99})
+        assert searcher.curr_comp == 1
+        assert searcher.defaults["a"] == searcher.id_to_config["a1"]["a"]
+        assert len(searcher.curr_searcher.in_progress) == 0
+        assert len(searcher.curr_searcher.all_deployed) == 0
+
+        searcher.on_trial_complete("c0", {"valid_acc": 0.999})

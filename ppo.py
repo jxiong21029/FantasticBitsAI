@@ -3,7 +3,7 @@ import torch
 
 from agents import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
-from utils import Logger, RunningMoments, discount_cumsum
+from utils import Logger, RunningMoments, discount_cumsum, grad_norm
 
 
 # adapted from SpinningUp PPO
@@ -259,21 +259,8 @@ class Trainer:
                     scaled_entropy=total_entropy,
                 )
 
-                self.optim.zero_grad()
+                self.optim.zero_grad(set_to_none=True)
                 total_loss.backward()
-
-                def grad_norm(module):
-                    with torch.no_grad():
-                        return torch.norm(
-                            torch.stack(
-                                [
-                                    torch.norm(p.grad.detach(), 2.0)
-                                    for p in module.parameters()
-                                    if p.grad is not None
-                                ]
-                            ),
-                            2.0,
-                        ).item()
 
                 norm = grad_norm(self.agents)
 
@@ -336,7 +323,11 @@ def main():
         rollout_steps=4096,
         lr=1e-4,
         epochs=3,
-        env_kwargs={"shape_snaffle_dist": True},
+        env_kwargs={
+            "bludgers_enabled": False,
+            "opponents_enabled": False,
+            "shape_snaffle_dist": True,
+        },
     )
     for _ in range(100):
         trainer.train()
