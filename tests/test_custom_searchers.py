@@ -143,55 +143,64 @@ def test_special_search_spaces_suggestion_count(searcher_2):
 
 
 def test_independent_components_search():
-    searcher = IndependentComponentsSearch(
-        search_space={
-            "lr": log_halving_search(1e-5, 1e-3, 1e-1),
-            "batch_size": grid_search(32, 64),
-            "weight_decay": log_halving_search(1e-5, 1e-3, 1e-1),
-            "dropout": grid_search(0.1, 0.2, 0.3),
-            "n_layers": 2,
-        },
-        depth=2,
-        defaults={
-            "lr": 1e-3,
-            "batch_size": 64,
-            "weight_decay": 1e-4,
-            "dropout": 0.2,
-            "n_layers": 2,
-        },
-        components=(
-            ("lr", "batch_size"),
-            ("weight_decay", "dropout"),
-        ),
-        metric="val_acc",
-        mode="max",
-        repeat=2,
-    )
-    s0 = searcher.suggest("0")
-    s1 = searcher.suggest("1")
-    searcher.on_trial_complete("0", {"val_acc": 0.99})
+    for seed in range(10):
+        searcher = IndependentComponentsSearch(
+            search_space={
+                "lr": log_halving_search(1e-5, 1e-3, 1e-1),
+                "batch_size": grid_search(32, 64),
+                "weight_decay": log_halving_search(1e-5, 1e-3, 1e-1),
+                "dropout": grid_search(0.1, 0.2, 0.3),
+                "n_layers": 2,
+            },
+            depth=2,
+            defaults={
+                "lr": 1e-4,
+                "batch_size": 64,
+                "weight_decay": 1e-4,
+                "dropout": 0.2,
+                "n_layers": 2,
+            },
+            components=(
+                ("lr", "batch_size"),
+                ("weight_decay", "dropout"),
+            ),
+            metric="val_acc",
+            mode="max",
+            repeat=2,
+            seed=2**(seed // 2) + seed
+        )
+        s0 = searcher.suggest("0")
+        s1 = searcher.suggest("1")
+        searcher.on_trial_complete("0", {"val_acc": 0.99})
 
-    assert (s0["lr"] != s1["lr"]) or (s0["batch_size"] != s1["batch_size"])
-    assert s0["weight_decay"] == s1["weight_decay"] == 1e-4
-    assert s0["dropout"] == s1["dropout"] == 0.2
-    assert s0["n_layers"] == s1["n_layers"] == 2
+        assert (s0["lr"] != s1["lr"]) or (s0["batch_size"] != s1["batch_size"])
+        assert s0["weight_decay"] == s1["weight_decay"] == 1e-4
+        assert s0["dropout"] == s1["dropout"] == 0.2
+        assert s0["n_layers"] == s1["n_layers"] == 2
 
-    other_suggestions = []
-    for i in range(2, 2 * (3 + 7 + 15)):
-        other_suggestions.append(searcher.suggest(str(i)))
+        other_suggestions = []
+        for i in range(2, 2 * (3 + 7 + 15)):
+            other_suggestions.append(searcher.suggest(str(i)))
 
-    sa = searcher.suggest("a")
-    sb = searcher.suggest("b")
-    assert (sa["weight_decay"] != sb["weight_decay"]) or (
-        sa["dropout"] != sb["dropout"]
-    )
-    assert sa["lr"] == sb["lr"]
-    assert sa["batch_size"] == sb["batch_size"]
+        assert searcher.curr_comp == 0
+        sa = searcher.suggest("a")
+        assert searcher.curr_comp == 1
+        sb = searcher.suggest("b")
+        assert searcher.curr_comp == 1
 
-    for i, s in enumerate(other_suggestions):
-        if s["lr"] != s0["lr"]:
-            searcher.on_trial_complete(str(i + 2), {"val_acc": 0.999})
-    assert len(searcher._curr_searcher.in_progress) == 0
+        assert (sa["weight_decay"] != sb["weight_decay"]) or (
+            sa["dropout"] != sb["dropout"]
+        )
+        assert sa["lr"] == sb["lr"]
+        assert sa["batch_size"] == sb["batch_size"]
+
+        for i, s in enumerate(other_suggestions):
+            if s["lr"] != s0["lr"]:
+                assert searcher.id_to_config[str(i + 2)] == s
+                searcher.on_trial_complete(str(i + 2), {"val_acc": 0.999})
+                break
+
+        assert len(searcher.curr_searcher.in_progress) == 0
 
 
 def test_independent_components_no_wasted_sweeps():

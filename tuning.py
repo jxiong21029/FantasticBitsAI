@@ -1,9 +1,9 @@
 import itertools
 import math
-import random
 from collections import defaultdict
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from ray import air, tune
 from ray.tune.search import Searcher
@@ -50,7 +50,7 @@ class SearchNode:
 
 
 class IntervalHalvingSearch(Searcher):
-    def __init__(self, search_space, depth, metric, mode):
+    def __init__(self, search_space, depth, metric, mode, seed=None):
         """
         expected input format example:
         search_space = {
@@ -61,6 +61,7 @@ class IntervalHalvingSearch(Searcher):
         """
 
         super().__init__(metric=metric, mode=mode)
+        self.rng = np.random.default_rng(seed)
 
         self.max_depth = depth
         self.grid_searches = {}
@@ -204,7 +205,7 @@ class IntervalHalvingSearch(Searcher):
             if len(possible_parents) == 0:
                 return Searcher.FINISHED
             minimum_depth = min(node.depth for node in possible_parents)
-            parent = random.choice(
+            parent = self.rng.choice(
                 [node for node in possible_parents if node.depth == minimum_depth]
             )
 
@@ -219,7 +220,7 @@ class IntervalHalvingSearch(Searcher):
         valid = [
             node for node in self.candidates if node.depth == self.candidates[0].depth
         ]
-        selected = random.choice(valid)
+        selected = self.rng.choice(valid)
         self.candidates.remove(selected)
         self.in_progress[trial_id] = selected
         self.all_deployed.add(selected)
@@ -265,6 +266,7 @@ class IndependentComponentsSearch(Searcher):
         metric: str,
         mode: str,
         repeat=1,
+        seed=None
     ):
         if search_space.keys() != defaults.keys():
             raise ValueError("expected search_space and defaults to have same keys")
@@ -274,25 +276,25 @@ class IndependentComponentsSearch(Searcher):
                     raise ValueError("expected component keys to be in search_space")
 
         super().__init__(metric=metric, mode=mode)
+        self.seed = seed
         self.depth = depth
 
         self.components = components * repeat
         self.search_space = search_space
         self.defaults = defaults
 
-        self._curr_group = 0
+        self.curr_comp = 0
         self.id_to_config = {}
-        self.best_score = None
-        self.best_config = None
+        self.id_to_component = {}
+        self.curr_searcher: IntervalHalvingSearch = self.init_search()
+
+        self.best_score = [None for _ in range(len(self.components))]
+        self.best_config = [None for _ in range(len(self.components))]
         self.done = False
 
-        self._curr_searcher_ids = set()
-        self._curr_searcher: IntervalHalvingSearch = self._init_group()
-
-    def _init_group(self):
-        self._curr_searcher_ids.clear()
+    def init_search(self):
         search_subspace = {
-            k: (v if k in self.components[self._curr_group] else self.defaults[k])
+            k: (v if k in self.components[self.curr_comp] else self.defaults[k])
             for k, v in self.search_space.items()
         }
         return IntervalHalvingSearch(
@@ -300,51 +302,57 @@ class IndependentComponentsSearch(Searcher):
             depth=self.depth,
             metric=self.metric,
             mode=self.mode,
+            seed=self.seed,
         )
 
     def suggest(self, trial_id):
         if self.done:
             return Searcher.FINISHED
-        ret = self._curr_searcher.suggest(trial_id)
+        ret = self.curr_searcher.suggest(trial_id)
 
         if ret == Searcher.FINISHED:
-            self._curr_group += 1
-            if self._curr_group == len(self.components):
+            self.curr_comp += 1
+            if self.curr_comp == len(self.components):
                 self.done = True
                 return Searcher.FINISHED
-            self._curr_searcher = self._init_group()
-            ret = self._curr_searcher.suggest(trial_id)
+            self.curr_searcher = self.init_search()
+            ret = self.curr_searcher.suggest(trial_id)
 
-        self._curr_searcher_ids.add(trial_id)
         self.id_to_config[trial_id] = ret
+        self.id_to_component[trial_id] = self.curr_comp
         return ret
 
     def on_trial_complete(self, trial_id, result=None, error=False):
+        trial_comp = self.id_to_component[trial_id]
         if error:
-            if trial_id in self._curr_searcher_ids:
-                self._curr_searcher.on_trial_complete(trial_id, result, error)
+            if trial_comp == self.curr_comp:
+                self.curr_searcher.on_trial_complete(trial_id, result, error)
             return
 
+        score = result[self.metric]
         if (
-            self.best_score is None
-            or (self.mode == "max" and result[self.metric] > self.best_score)
-            or (self.mode == "min" and result[self.metric] < self.best_score)
+            self.best_score[trial_comp] is None
+            or (self.mode == "max" and score > self.best_score[trial_comp])
+            or (self.mode == "min" and score < self.best_score[trial_comp])
         ):
-            self.best_score = result[self.metric]
-            self.best_config = self.id_to_config[trial_id]
 
             config = self.id_to_config[trial_id]
-            reinit = False
-            for k in self.search_space.keys():
-                if config[k] != self.defaults[k]:
-                    self.defaults[k] = config[k]
-                    if k not in self.components[self._curr_group]:
-                        reinit = True
-            if reinit:
-                self._curr_searcher = self._init_group()
+            self.best_score[trial_comp] = score
+            self.best_config[trial_comp] = config
 
-        if trial_id in self._curr_searcher_ids:
-            self._curr_searcher.on_trial_complete(trial_id, result, error)
+            if trial_comp < self.curr_comp:
+                reinit = False
+                for k in self.search_space.keys():
+                    if config[k] != self.defaults[k]:
+                        self.defaults[k] = config[k]
+                        if k not in self.components[self.curr_comp]:
+                            reinit = True
+                if reinit:
+                    self.curr_comp = trial_comp + 1
+                    self.curr_searcher = self.init_search()
+
+        if trial_comp == self.curr_comp:
+            self.curr_searcher.on_trial_complete(trial_id, result, error)
 
 
 def train(config):
