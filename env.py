@@ -1,15 +1,38 @@
+import sys
 import warnings
 
-import gym
 import numpy as np
 
-from engine import Bludger, Point, Snaffle, Wizard, engine_step
+from engine import POLES, Bludger, Point, Snaffle, Wizard, engine_step
+
+DIST_NORM = 8000
+VEL_NORM = 1000
+SZ_GLOBAL = 3
+SZ_WIZARD = 6
+SZ_SNAFFLE = 4
+SZ_BLUDGER = 8
+
+SCALE = 20
+MARGIN = 25
 
 
 class FantasticBits:
-    def __init__(self, shape_snaffling=False, seed=None):
-        self.rng = np.random.default_rng(seed)
-        self.shape_snaffling = shape_snaffling
+    def __init__(
+        self,
+        bludgers_enabled=True,
+        opponents_enabled=True,
+        shape_snaffle_dist=False,
+        render=False,
+        seed=None,
+        logger=None,
+    ):
+        self.rng = np.random.default_rng(seed=seed)
+        self.logger = logger
+
+        self.bludgers_enabled = bludgers_enabled
+        self.opponents_enabled = opponents_enabled
+        self.shape_snaffle_dist = shape_snaffle_dist
+        self.render = render
 
         self.t = 0
         self.score = [0, 0]
@@ -19,75 +42,78 @@ class FantasticBits:
         self.agents: list[Wizard] = []
         self.opponents: list[Wizard] = []
 
-        self.observation_spaces = {
-            agent_id: gym.spaces.Dict(
-                {
-                    "global": gym.spaces.Box(0, 1, shape=(3,)),
-                    "entities": gym.spaces.Sequence(gym.spaces.Box(0, 1, shape=(9,))),
-                }
+        if render:
+            import pygame
+
+            self.screen = pygame.display.set_mode(
+                (16000 / SCALE + MARGIN * 2, 7500 / SCALE + MARGIN * 2)
             )
-            for agent_id in ("wizard_0", "wizard_1")
-        }
-        self.action_spaces = {
-            agent_id: gym.spaces.Dict(
-                {
-                    "move": gym.spaces.Box(-1, 1, shape=(2,)),
-                    "throw": gym.spaces.Box(-1, 1, shape=(2,)),
-                }
-            )
-            for agent_id in ("wizard_0", "wizard_1")
-        }
 
     def get_obs(self):
-        ret = {}
-        for i in range(2):
-            global_obs = np.array([self.t / 200, self.score[0] / 7, self.score[1] / 7])
-            entity_obs = [
-                np.array(
-                    [
-                        (self.agents[i].x - 8000) / 8000,
-                        (self.agents[i].y - 3750) / 8000,
-                        self.agents[i].vx / 500,
-                        self.agents[i].vy / 500,
-                    ]
-                    + [1, 0, 0, 0, 0]
-                ),
-                np.array(
-                    [
-                        (self.agents[1 - i].x - self.agents[i].x) / 8000,
-                        (self.agents[1 - i].y - self.agents[i].y) / 8000,
-                        self.agents[1 - i].vx / 500,
-                        self.agents[1 - i].vy / 500,
-                    ]
-                    + [0, 1, 0, 0, 0]
-                ),
-            ]
-            for entity in self.opponents + self.snaffles + self.bludgers:
-                if isinstance(entity, Wizard):
-                    class_embedding = [0, 0, 1, 0, 0]
-                elif isinstance(entity, Snaffle):
-                    class_embedding = [0, 0, 0, 1, 0]
-                else:
-                    class_embedding = [0, 0, 0, 0, 1]
+        ret = {
+            "global": np.array(
+                [
+                    self.t / 200,
+                    self.score[0] / 7,
+                    self.score[1] / 7,
+                ],
+                dtype=np.float32,
+            )
+        }
+        for i, wizard in enumerate(self.agents + self.opponents):
+            ret[f"wizard{i}"] = np.array(
+                [
+                    (wizard.x - 8000) / DIST_NORM,
+                    (wizard.y - 3750) / DIST_NORM,
+                    wizard.vx / VEL_NORM,
+                    wizard.vy / VEL_NORM,
+                    0 if i < 2 else 1,  # 0 if teammate, 1 if opponent
+                    1 if wizard.grab_cd == 2 else 0,  # throw available
+                ],
+                dtype=np.float32,
+            )
 
-                entity_obs.append(
-                    np.array(
-                        [
-                            (entity.x - self.agents[i].x) / 8000,
-                            (entity.y - self.agents[i].y) / 8000,
-                            entity.vx / 500,
-                            entity.vy / 500,
-                        ]
-                        + class_embedding
-                    )
-                )
-            ret[f"wizard_{i}"] = {"global": global_obs, "entities": entity_obs}
+        for i, snaffle in enumerate(self.snaffles):
+            ret[f"snaffle{i}"] = np.array(
+                [
+                    (snaffle.x - 8000) / DIST_NORM,
+                    (snaffle.y - 3750) / DIST_NORM,
+                    snaffle.vx / VEL_NORM,
+                    snaffle.vy / VEL_NORM,
+                ],
+                dtype=np.float32,
+            )
+
+        for i, bludger in enumerate(self.bludgers):
+            ret[f"bludger{i}"] = np.array(
+                [
+                    (bludger.x - 8000) / DIST_NORM,
+                    (bludger.y - 3750) / DIST_NORM,
+                    bludger.vx / VEL_NORM,
+                    bludger.vy / VEL_NORM,
+                    (bludger.last_target.x - 8000) / DIST_NORM
+                    if bludger.last_target is not None
+                    else 0,
+                    (bludger.last_target.y - 3750) / DIST_NORM
+                    if bludger.last_target is not None
+                    else 0,
+                    (bludger.current_target.x - 8000) / DIST_NORM
+                    if bludger.current_target is not None
+                    else 0,
+                    (bludger.current_target.y - 3750) / DIST_NORM
+                    if bludger.current_target is not None
+                    else 0,
+                ],
+                dtype=np.float32,
+            )
+
         return ret
 
     def reset(self):
         rng = self.rng
 
         self.t = 0
+        self.score = [0, 0]
         if rng.random() < 0.5:
             tot_snaffles = 5
         else:
@@ -112,34 +138,40 @@ class FantasticBits:
 
             self.snaffles.append(Snaffle(newx, newy))
             self.snaffles.append(Snaffle(16000 - newx, 7500 - newy))
+        self.render_frame()
         return self.get_obs()
 
     def step(self, actions):
-        assert sorted(list(actions.keys())) == ["wizard_0", "wizard_1"]
+        # actions: {"id": np.array([0, 1]), "target": np.array([[-.8, .4], [.3, .2]])}
 
-        rewards = {"wizard_0": 0, "wizard_1": 1}
-
+        rewards = np.zeros(2)
         for i, agent in enumerate(self.agents):
-            action = actions[f"wizard_{i}"]
-            if agent.grab_cd == 2 and "throw" in action.keys():
-                held_snaffle = min(self.snaffles, key=lambda s: s.distance2(agent))
-                held_snaffle.yeet(
-                    agent.x + action["throw"][0], agent.y + action["throw"][1]
+            direction = actions["target"][i]
+            if actions["id"][i] == 1:  # throw
+                if agent.grab_cd != 2:
+                    warnings.warn(f"agent {i} attempted throw without snaffle")
+                    continue
+
+                for snaffle in self.snaffles:
+                    if (agent.x, agent.y) == (snaffle.x, snaffle.y):
+                        snaffle.yeet(agent.x + direction[0], agent.y + direction[1])
+                        break
+            else:
+                agent.thrust(agent.x + direction[0], agent.y + direction[1])
+
+        if self.opponents_enabled:
+            for opponent in self.opponents:
+                nearest_snaffle = min(
+                    self.snaffles, key=lambda s: s.distance2(opponent)
                 )
-            elif "move" in actions["wizard_0"].keys():
-                agent.thrust(agent.x + action["move"][0], agent.y + action["move"][1])
-            else:
-                warnings.warn(f"agent {i} idling")
+                if opponent.grab_cd == 2:
+                    nearest_snaffle.yeet(0, 3750)
+                else:
+                    opponent.thrust(nearest_snaffle.x, nearest_snaffle.y)
 
-        for opponent in self.opponents:
-            nearest_snaffle = min(self.snaffles, key=lambda s: s.distance2(opponent))
-            if opponent.grab_cd == 2:
-                nearest_snaffle.yeet(0, 3750)
-            else:
-                opponent.thrust(nearest_snaffle.x, nearest_snaffle.y)
-
-        for bludger in self.bludgers:
-            bludger.bludge(self.agents + self.opponents)
+        if self.bludgers_enabled:
+            for bludger in self.bludgers:
+                bludger.bludge(self.agents + self.opponents)
 
         total_snaffle_dist = sum(s.distance(Point(16000, 3750)) for s in self.snaffles)
 
@@ -149,22 +181,107 @@ class FantasticBits:
 
         new_total_dist = sum(s.distance(Point(16000, 3750)) for s in self.snaffles)
 
-        if self.shape_snaffling:
-            rewards["wizard_0"] += (total_snaffle_dist - new_total_dist) / 16000
-            rewards["wizard_1"] += (total_snaffle_dist - new_total_dist) / 16000
+        # NOTE: hardcoded discount factor
+        if self.shape_snaffle_dist:
+            rewards[0] += (total_snaffle_dist - new_total_dist) / 10000
+            rewards[1] += (total_snaffle_dist - new_total_dist) / 10000
 
         for team, snaffle in scored_goals:
             self.snaffles.remove(snaffle)
             self.score[team - 1] += 1
             if team == 1:
-                closer_wizard = min(self.agents, key=lambda w: w.distance2(snaffle))
-                if closer_wizard is self.agents[0]:
-                    rewards["wizard_0"] += 10
-                    rewards["wizard_1"] += 1
-                else:
-                    rewards["wizard_0"] += 1
-                    rewards["wizard_1"] += 10
+                for i, wizard in enumerate(self.agents):
+                    if snaffle.last_touched == wizard:
+                        rewards[i] += 3
+                    else:
+                        rewards[i] += 1
 
+        self.t += 1
         done = len(self.snaffles) == 0 or self.t == 200
 
+        if done and self.logger is not None:
+            self.logger.log(
+                goals_scored=self.score[0],
+                episode_len=self.t,
+            )
+
+        self.render_frame()
         return self.get_obs(), rewards, done
+
+    def render_frame(self):
+        if not self.render:
+            return
+
+        import pygame
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:
+                pygame.quit()
+                pygame.display.quit()
+                sys.exit()
+
+        self.screen.fill((0, 0, 0))
+        pygame.draw.line(
+            self.screen,
+            (150, 150, 0),
+            (MARGIN, MARGIN),
+            (MARGIN + 16000 / SCALE, MARGIN),
+        )
+        pygame.draw.line(
+            self.screen,
+            (150, 150, 0),
+            (MARGIN + 16000 / SCALE, MARGIN),
+            (MARGIN + 16000 / SCALE, MARGIN + 7500 / SCALE),
+        )
+        pygame.draw.line(
+            self.screen,
+            (150, 150, 0),
+            (MARGIN + 16000 / SCALE, MARGIN + 7500 / SCALE),
+            (MARGIN, MARGIN + 7500 / SCALE),
+        )
+        pygame.draw.line(
+            self.screen,
+            (150, 150, 0),
+            (MARGIN, MARGIN + 7500 / SCALE),
+            (MARGIN, MARGIN),
+        )
+        for entity in (
+            self.agents + self.opponents + self.snaffles + self.bludgers + POLES
+        ):
+            if isinstance(entity, Wizard) and entity in self.agents:
+                color = (255, 0, 0)
+            elif isinstance(entity, Wizard):
+                color = (255, 100, 100)
+            elif isinstance(entity, Snaffle):
+                color = (255, 255, 0)
+            elif isinstance(entity, Bludger):
+                if entity.current_target is not None:
+                    pygame.draw.line(
+                        self.screen,
+                        (100, 100, 100),
+                        (entity.x / SCALE + MARGIN, entity.y / SCALE + MARGIN),
+                        (
+                            entity.current_target.x / SCALE + MARGIN,
+                            entity.current_target.y / SCALE + MARGIN,
+                        ),
+                    )
+                color = (100, 100, 100)
+            else:
+                color = (50, 50, 50)
+            pygame.draw.circle(
+                self.screen,
+                color,
+                (entity.x / SCALE + MARGIN, entity.y / SCALE + MARGIN),
+                entity.rad / SCALE,
+            )
+            pygame.draw.line(
+                self.screen,
+                color,
+                (entity.x / SCALE + MARGIN, entity.y / SCALE + MARGIN),
+                (
+                    (entity.x + entity.vx) / SCALE + MARGIN,
+                    (entity.y + entity.vy) / SCALE + MARGIN,
+                ),
+            )
+
+        pygame.display.flip()

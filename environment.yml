@@ -1,0 +1,22 @@
+name: FantasticBits
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - black
+  - isort
+  - matplotlib
+  - numpy
+  - pandas
+  - pytest
+  - python=3.9
+  - pytorch
+  - scipy
+  - seaborn
+  - snakeviz
+  - tensorboard
+  - tqdm
+  - pip
+  - pip:
+      - pygame
+      - ray[tune]

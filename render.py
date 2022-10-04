@@ -1,92 +1,26 @@
-import sys
 import time
 
 import numpy as np
-import pygame
+import torch
 
-from engine import POLES
-from env import Bludger, FantasticBits, Snaffle, Wizard
+from agents import Agents
+from env import FantasticBits
 
-SCALE = 20
-MARGIN = 25
+# path = "ray_results/full_tune_2/train_2c8b2b5e_4_entropy_reg=0.0000,epochs=3,gae_lambda=0.9500,gamma=0.9900,lr=0.0100,minibatch_size=512,rollout_steps=4096,weight_2022-10-01_23-56-20/agents_2.pth"
+path = "bc_agents.pth"
 
-screen = pygame.display.set_mode(
-    (16000 / SCALE + MARGIN * 2, 7500 / SCALE + MARGIN * 2)
-)
+agents = Agents()
+agents.load_state_dict(torch.load(path))
+agents.eval()
 
-env = FantasticBits()
-env.reset()
-
-for _ in range(200):
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT or event.type == pygame.KEYDOWN:
-            pygame.quit()
-            pygame.display.quit()
-            sys.exit()
-
-    env.step(
-        {
-            "wizard_0": {"move": np.array([1, -1])},
-            "wizard_1": {"move": np.array([0, 1])},
-        }
-    )
-
-    screen.fill((0, 0, 0))
-    pygame.draw.line(
-        screen, (150, 150, 0), (MARGIN, MARGIN), (MARGIN + 16000 / SCALE, MARGIN)
-    )
-    pygame.draw.line(
-        screen,
-        (150, 150, 0),
-        (MARGIN + 16000 / SCALE, MARGIN),
-        (MARGIN + 16000 / SCALE, MARGIN + 7500 / SCALE),
-    )
-    pygame.draw.line(
-        screen,
-        (150, 150, 0),
-        (MARGIN + 16000 / SCALE, MARGIN + 7500 / SCALE),
-        (MARGIN, MARGIN + 7500 / SCALE),
-    )
-    pygame.draw.line(
-        screen, (150, 150, 0), (MARGIN, MARGIN + 7500 / SCALE), (MARGIN, MARGIN)
-    )
-    for entity in env.agents + env.opponents + env.snaffles + env.bludgers + POLES:
-        if isinstance(entity, Wizard) and entity in env.agents:
-            color = (255, 0, 0)
-        elif isinstance(entity, Wizard):
-            color = (255, 100, 100)
-        elif isinstance(entity, Snaffle):
-            color = (255, 255, 0)
-        elif isinstance(entity, Bludger):
-            if entity.current_target is not None:
-                pygame.draw.line(
-                    screen,
-                    (100, 100, 100),
-                    (entity.x / SCALE + MARGIN, entity.y / SCALE + MARGIN),
-                    (
-                        entity.current_target.x / SCALE + MARGIN,
-                        entity.current_target.y / SCALE + MARGIN,
-                    ),
-                )
-            color = (100, 100, 100)
-        else:
-            color = (50, 50, 50)
-        pygame.draw.circle(
-            screen,
-            color,
-            (entity.x / SCALE + MARGIN, entity.y / SCALE + MARGIN),
-            entity.rad / SCALE,
-        )
-        pygame.draw.line(
-            screen,
-            color,
-            (entity.x / SCALE + MARGIN, entity.y / SCALE + MARGIN),
-            (
-                (entity.x + entity.vx) / SCALE + MARGIN,
-                (entity.y + entity.vy) / SCALE + MARGIN,
-            ),
-        )
-
-    pygame.display.flip()
-
-    time.sleep(1 / 3)
+done = False
+eval_env = FantasticBits(bludgers_enabled=False, opponents_enabled=False, render=True)
+obs = eval_env.reset()
+tot_rew = np.zeros(2)
+while not done:
+    with torch.no_grad():
+        actions, _ = agents.step(obs)
+    obs, rew, done = eval_env.step(actions)
+    tot_rew += rew
+    time.sleep(0.1)
+print(f"total reward: {tot_rew.tolist()}")

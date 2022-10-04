@@ -2,6 +2,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from enum import Enum
+from typing import Union
 
 # collision handling logic adapted from
 # github.com/dreignier/fantastic-bits/blob/master/fantastic-bits.cpp
@@ -91,8 +92,7 @@ class Entity(Point):
         if self.vx == other.vx and self.vy == other.vy:
             return None
 
-        # We place ourselves in the reference frame of other. other is therefore
-        # stationary and is at (0,0)
+        # Place self in the other reference frame
         x = self.x - other.x
         y = self.y - other.y
         myp = Point(x, y)
@@ -240,6 +240,7 @@ class Snaffle(Entity):
     ):
         super().__init__(x, y, vx, vy, rad, mass, friction)
         self.grabbed = grabbed
+        self.last_touched = None
 
     def yeet(self, x, y, power=500):
         dx = x - self.x
@@ -295,6 +296,7 @@ class Snaffle(Entity):
                 self.vx = other.vx
                 self.vy = other.vy
 
+                self.last_touched = other
         else:
             super().bounce(other)
 
@@ -348,7 +350,7 @@ POLES = [
 @dataclass
 class Collision:
     a: Entity
-    b: Entity
+    b: Union[Boundary, Entity]
     t: float
 
 
