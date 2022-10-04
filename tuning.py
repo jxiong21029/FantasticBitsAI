@@ -267,6 +267,7 @@ class IndependentComponentsSearch(Searcher):
         mode: str,
         repeat=1,
         seed=None,
+        verbose=False,
     ):
         if search_space.keys() != defaults.keys():
             raise ValueError("expected search_space and defaults to have same keys")
@@ -276,8 +277,9 @@ class IndependentComponentsSearch(Searcher):
                     raise ValueError("expected component keys to be in search_space")
 
         super().__init__(metric=metric, mode=mode)
-        self.seed = seed
         self.depth = depth
+        self.seed = seed
+        self.verbose = verbose
 
         self.components = components * repeat
         self.search_space = search_space
@@ -293,6 +295,7 @@ class IndependentComponentsSearch(Searcher):
         self.done = False
 
     def init_search(self):
+        # TODO: fix tuple out of range bug
         search_subspace = {
             k: (v if k in self.components[self.curr_comp] else self.defaults[k])
             for k, v in self.search_space.items()
@@ -325,7 +328,7 @@ class IndependentComponentsSearch(Searcher):
     def on_trial_complete(self, trial_id, result=None, error=False):
         trial_comp = self.id_to_component[trial_id]
         if error:
-            if trial_comp == self.curr_comp:
+            if trial_id in self.curr_searcher.in_progress:
                 self.curr_searcher.on_trial_complete(trial_id, result, error)
             return
 
@@ -347,11 +350,13 @@ class IndependentComponentsSearch(Searcher):
                         self.defaults[k] = config[k]
                         if k not in self.components[self.curr_comp]:
                             reinit = True
+                if self.verbose:
+                    print(f"new default config: {self.defaults}")
                 if reinit:
                     self.curr_comp = trial_comp + 1
                     self.curr_searcher = self.init_search()
 
-        if trial_comp == self.curr_comp:
+        if trial_id in self.curr_searcher.in_progress:
             self.curr_searcher.on_trial_complete(trial_id, result, error)
 
 

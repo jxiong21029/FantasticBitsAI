@@ -3,9 +3,16 @@ import pickle
 import numpy as np
 import torch
 import tqdm
+from ray import air, tune
 
 from agents import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
+from tuning import (
+    IndependentComponentsSearch,
+    grid_search,
+    log_halving_search,
+    q_log_halving_search,
+)
 from utils import Logger, grad_norm
 
 
@@ -43,7 +50,7 @@ def stack_actions(dicts):
 
 
 def generate_demonstrations(num_episodes=50):
-    env = FantasticBits()
+    env = FantasticBits(bludgers_enabled=True, opponents_enabled=True)
     obs_buf = []
     act_buf = []
     for _ in tqdm.trange(num_episodes):
@@ -144,26 +151,100 @@ class BCTrainer:
 
         self.logger.step()
 
+    def evaluate(self, num_episodes=50):
+        temp_logger = Logger()
+        eval_env = FantasticBits(
+            bludgers_enabled=True, opponents_enabled=True, logger=temp_logger
+        )
+        for _ in range(num_episodes):
+            obs = eval_env.reset()
+            done = False
+            while not done:
+                with torch.no_grad():
+                    actions, _ = self.agents.step(obs)
+                obs, _, done = eval_env.step(actions)
+        temp_logger.step()
+        self.logger.cumulative_data.update(
+            {"eval_" + k: v for k, v in temp_logger.cumulative_data.items()}
+        )
 
-# TODO: tune RL
+
 # TODO: fix behavioral cloning loss, use cosine angle? normalize to length 1 mean?
 # TODO: tune behavioral cloning, analyze data scaling
 # TODO: use behavioral cloning performance as a proxy for RL model capacity
 
 
-def main():
+def train(config):
     trainer = BCTrainer(
-        Agents(),
-        "data/basic_demo.pickle",
-        lr=10**-3.5,
-        minibatch_size=128,
-        weight_decay=10**-5,
+        Agents(
+            num_layers=config["num_layers"],
+            d_model=config["d_model"],
+            nhead=config["nhead"],
+            norm_target_mean=config["norm_target_mean"],
+        ),
+        "../../../data/basic_demo.pickle",
+        lr=config["lr"],
+        minibatch_size=config["minibatch_size"],
+        weight_decay=config["weight_decay"],
         grad_clipping=None,
     )
-    for _ in range(50):
+    for i in range(101):
         trainer.train()
-        print({k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
-    torch.save(trainer.agents.state_dict(), f"bc_agents.pth")
+        if i % 20 == 0:
+            trainer.evaluate()
+            tune.report(**{k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
+
+
+def main():
+    search_alg = IndependentComponentsSearch(
+        search_space={
+            "lr": log_halving_search(1e-4, 1e-3, 1e-2),
+            "minibatch_size": q_log_halving_search(32, 128, 512),
+            "weight_decay": log_halving_search(1e-7, 1e-5, 1e-3),
+            "num_layers": grid_search(1, 2, 3),
+            "d_model": q_log_halving_search(8, 32, 128),
+            "nhead": grid_search(1, 2, 4),
+            "norm_target_mean": grid_search(True, False),
+        },
+        depth=1,
+        defaults={
+            "lr": 1e-4,
+            "minibatch_size": 64,
+            "weight_decay": 1e-4,
+            "num_layers": 1,
+            "d_model": 32,
+            "nhead": 2,
+            "norm_target_mean": False,
+        },
+        components=(
+            ("norm_target_mean",),
+            ("lr", "minibatch_size", "num_layers"),
+            ("lr", "d_model"),
+            ("nhead",),
+            ("weight_decay",),
+        ),
+        metric="eval_goals_scored_mean",
+        mode="max",
+        verbose=True,
+    )
+
+    tuner = tune.Tuner(
+        train,
+        tune_config=tune.TuneConfig(
+            num_samples=-1,
+            search_alg=search_alg,
+            max_concurrent_trials=8,
+        ),
+        run_config=air.RunConfig(
+            name="bc_tune",
+            local_dir="ray_results/",
+            verbose=0,
+        ),
+    )
+    tuner.fit()
+
+    print("best score:", search_alg.best_score)
+    print("best config:", search_alg.best_config)
 
 
 if __name__ == "__main__":

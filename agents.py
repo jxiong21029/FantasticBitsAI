@@ -10,7 +10,7 @@ from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD
 
 
 class Encoder(nn.Module):
-    def __init__(self, d_model, nhead):
+    def __init__(self, num_layers, d_model, nhead):
         super().__init__()
 
         self.d_model = d_model
@@ -26,7 +26,7 @@ class Encoder(nn.Module):
             nn.TransformerEncoderLayer(
                 d_model, nhead=nhead, dim_feedforward=64, dropout=0
             ),
-            num_layers=1,
+            num_layers=num_layers,
             norm=norm,
         )
 
@@ -90,11 +90,13 @@ class Encoder(nn.Module):
 
 
 class Agents(nn.Module):
-    def __init__(self, d_model=32, nhead=2):
+    def __init__(self, num_layers=1, d_model=32, nhead=2, norm_target_mean=False):
         super().__init__()
 
-        self.policy_encoder = Encoder(d_model, nhead)
-        self.value_encoder = Encoder(d_model, nhead)
+        self.norm_target_mean = norm_target_mean
+
+        self.policy_encoder = Encoder(num_layers, d_model, nhead)
+        self.value_encoder = Encoder(num_layers, d_model, nhead)
 
         self.move_head = nn.Linear(d_model, 4)
         self.throw_head = nn.Linear(d_model, 4)
@@ -127,6 +129,8 @@ class Agents(nn.Module):
                     logits = self.move_head(embed)
 
                 mu = logits[:2]
+                if self.norm_target_mean:
+                    mu = mu / torch.norm(mu)
                 sigma = F.softplus(
                     logits[2:] + self._std_offset.to(device=logits.device)
                 )
@@ -165,6 +169,9 @@ class Agents(nn.Module):
             logits[~throw_turns] = self.move_head(embed[~throw_turns])
 
             mu = logits[:, :2]
+            if self.norm_target_mean:
+                mu = mu / torch.norm(mu, dim=1, keepdim=True)
+                assert torch.isclose(mu[0][0] ** 2 + mu[0][1] ** 2, torch.tensor(1.0))  # TODO: remove
             sigma = F.softplus(
                 logits[:, 2:] + self._std_offset.to(device=logits.device)
             )
