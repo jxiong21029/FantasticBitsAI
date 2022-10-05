@@ -246,7 +246,7 @@ class IntervalHalvingSearch(Searcher):
             self.best_scores[node.depth] = result[self.metric]
             self.best_configs[node.depth] = node.config
 
-            if node.depth < self.max_depth:
+            if node.depth < self.max_depth and not node.expanded:
                 node.expanded = True
                 for config in self.config_neighbors(node.config, node.depth + 1):
                     self.candidates.append(

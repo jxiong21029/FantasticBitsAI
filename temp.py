@@ -8,17 +8,16 @@ from tuning import IntervalHalvingSearch
 
 @dataclass
 class ICSearchNode:
-    searcher: IntervalHalvingSearch
-    parent_subconfig: dict
+    config: dict
     group: int
 
     def __hash__(self):
         return hash(
-            tuple(
-                self.parent_subconfig[k] for k in sorted(self.parent_subconfig.keys())
-            )
-            + (self.group,)
+            tuple(self.config[k] for k in sorted(self.config.keys())) + (self.group,)
         )
+
+    def __eq__(self, other):
+        return self.config == other.config and self.group == other.group
 
 
 class IndependentGroupsSearch(Searcher):
@@ -50,89 +49,68 @@ class IndependentGroupsSearch(Searcher):
         self.groups = groups * repeat
         self.defaults = defaults
 
-        self.candidates = deque(
-            [
-                ICSearchNode(
-                    IntervalHalvingSearch(
-                        {
-                            k: v if k in self.groups[0] else defaults[k]
-                            for k, v in self.search_space.items()
-                        },
-                        depth=self.depth,
-                        metric=self.metric,
-                        mode=self.mode,
-                    ),
-                    {},
-                    0,
-                )
-            ]
+        self.searcher_best = IntervalHalvingSearch(
+            {
+                k: v if k in self.groups[0] else defaults[k]
+                for k, v in self.search_space.items()
+            },
+            depth=self.depth,
+            metric=self.metric,
+            mode=self.mode,
         )
-        self.in_progress = {}  # trial_id -> (config, group)?
-
-        self.best_config = {}
-        self.best_score = {}
-
-    def searcher_from(self, config, new_group_idx):
-        parent_subconfig = {}
-        search_subspace = {}
-        for k in self.search_space.keys():
-            if k in self.groups[new_group_idx]:
-                search_subspace[k] = self.search_space[k]
-            else:
-                search_subspace[k] = config[k]
-                parent_subconfig[k] = config[k]
-        return ICSearchNode(
-            IntervalHalvingSearch(
-                search_space=search_subspace,
-                depth=self.depth,
-                metric=self.metric,
-                mode=self.mode,
-            ),
-            parent_subconfig=parent_subconfig,
-            group=new_group_idx,
-        )
+        self.searcher_greedy = None
+        self.candidates = []
+        self.curr_group = 0
+        self.best_config = [None for _ in range(len(self.groups))]
+        self.best_score = [None for _ in range(len(self.groups))]
+        self.id_to_group = {}
+        self.id_to_config = {}
 
     def suggest(self, trial_id):
-        def contains(config, subconfig):
-            return all(config[k] == v for k, v in subconfig.items())
-
-        self.candidates = deque(
-            [
-                node
-                for node in self.candidates
-                if (
-                    node.group not in self.best_config.keys()
-                    or contains(self.best_config[node.group - 1], node.parent_subconfig)
-                    or any(
-                        contains(config, node.parent_subconfig)
-                        for config, _ in self.in_progress.values()
-                    )
-                )
-                and True  # TODO: check if subconfig + group isn't already being checked
-            ]
-        )
-
-        for candidate in self.candidates:
-            suggestion = candidate.searcher.suggest(trial_id)
-            if isinstance(suggestion, dict):
-                self.in_progress[trial_id] = (suggestion, self.candidates[0].group)
-                return suggestion
-
-        while len(self.candidates) > 0:
-            done = False
-            for node in self.candidates[0].searcher.in_progress.values():
-                if node.depth == self.candidates[0].searcher.max_depth:
-                    self.candidates.append(
-                        self.searcher_from(node.config, self.candidates[0].group + 1)
-                    )
-                    done = True
-            self.candidates.popleft()
-            if done:
-                break
+        if self.searcher_best is not None:
+            suggestion = self.searcher_best.suggest(trial_id)
+            if suggestion == Searcher.FINISHED:
+                self.searcher_best = None
         else:
-            return Searcher.FINISHED
+            suggestion = self.searcher_greedy.suggest(trial_id)
+            if suggestion == Searcher.FINISHED:
+                self.searcher_best = None
 
-        return self.suggest(trial_id)
+        if suggestion == Searcher.FINISHED:
+            for candidate in self.candidates:
+                pass
+
+        if self.searcher.in_progress[trial_id].depth == self.searcher.max_depth:
+            self.candidates.append(ICSearchNode(suggestion, self.curr_group))
+
+        self.id_to_group[trial_id] = self.curr_group
+        self.id_to_config[trial_id] = suggestion
+        return suggestion
 
     def on_trial_complete(self, trial_id, result=None, error=False):
-        pass
+        # TODO: 2 cases
+        #   case 1: beats known best / first result in group
+        #       a. preceding group: reset and expand if not already explored
+        #           -> so we do need to store past searchers...
+        #       b. current group, same search: nothing
+        #       c. current group, diff search: nothing
+        #       d. following group: nothing
+        #   case 2: loses to best: nothing
+
+        trial_group = self.id_to_group[trial_id]
+        trial_config = self.id_to_config[trial_id]
+        score = result[self.metric]
+        if (
+            self.best_score[trial_group] is None
+            or self.mode == "max"
+            and score > self.best_score[trial_group]
+            or self.mode == "min"
+            and score < self.best_score[trial_group]
+        ):
+            if trial_group < self.curr_group:
+                for k in self.search_space.keys():
+                    pass
+                    # if k not in self.groups[self.curr_group] and self.search
+
+            self.best_score[trial_group] = score
+            self.best_config[trial_group] = trial_config
