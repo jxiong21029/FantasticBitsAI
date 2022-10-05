@@ -256,6 +256,12 @@ class IntervalHalvingSearch(Searcher):
         del self.in_progress[trial_id]
 
 
+@dataclass
+class ICSearchNode:
+    subconfig: dict
+    component: int
+
+
 class IndependentComponentsSearch(Searcher):
     def __init__(
         self,
