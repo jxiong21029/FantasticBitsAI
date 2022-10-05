@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from tuning import (
-    IndependentComponentsSearch,
+    IndependentGroupsSearch,
     IntervalHalvingSearch,
     grid_search,
     log_halving_search,
@@ -142,9 +142,9 @@ def test_special_search_spaces_suggestion_count(searcher_2):
     assert not isinstance(searcher_2.suggest("last"), dict)
 
 
-def test_independent_components_search():
+def test_independent_groups_search():
     for seed in range(10):
-        searcher = IndependentComponentsSearch(
+        searcher = IndependentGroupsSearch(
             search_space={
                 "lr": log_halving_search(1e-5, 1e-3, 1e-1),
                 "batch_size": grid_search(32, 64),
@@ -160,7 +160,7 @@ def test_independent_components_search():
                 "dropout": 0.2,
                 "n_layers": 2,
             },
-            components=(
+            groups=(
                 ("lr", "batch_size"),
                 ("weight_decay", "dropout"),
             ),
@@ -182,11 +182,11 @@ def test_independent_components_search():
         for i in range(2, 2 * (3 + 7 + 15)):
             other_suggestions.append(searcher.suggest(str(i)))
 
-        assert searcher.curr_comp == 0
+        assert searcher.curr_group == 0
         sa = searcher.suggest("a")
-        assert searcher.curr_comp == 1
+        assert searcher.curr_group == 1
         sb = searcher.suggest("b")
-        assert searcher.curr_comp == 1
+        assert searcher.curr_group == 1
 
         assert (sa["weight_decay"] != sb["weight_decay"]) or (
             sa["dropout"] != sb["dropout"]
@@ -203,8 +203,8 @@ def test_independent_components_search():
         assert len(searcher.curr_searcher.in_progress) == 0
 
 
-def test_independent_components_no_wasted_sweeps():
-    searcher = IndependentComponentsSearch(
+def test_independent_groups_no_wasted_sweeps():
+    searcher = IndependentGroupsSearch(
         {
             "a": q_uniform_halving_search(1, 2, 3),
             "b": 1,
@@ -222,22 +222,22 @@ def test_independent_components_no_wasted_sweeps():
             "e": 3,
             "f": 1e-2,
         },
-        components=(("c",), ("d", "e")),
+        groups=(("c",), ("d", "e")),
         metric="whatever",
         mode="max",
         repeat=2,
     )
 
     suggestions = []
-    for i in range(100):
+    for i in range(999):
         suggestions.append(searcher.suggest(str(i)))
     suggestions = [s for s in suggestions if isinstance(s, dict)]
-    assert len(suggestions) == 34
+    assert len(suggestions) == 900
 
 
-def test_old_component_new_best_override():
+def test_old_group_new_best_override():
     for seed in range(10):
-        searcher = IndependentComponentsSearch(
+        searcher = IndependentGroupsSearch(
             {
                 "a": grid_search(1, 2, 3),
                 "b": log_halving_search(1e-3, 1e-2, 1e-1),
@@ -245,7 +245,7 @@ def test_old_component_new_best_override():
             },
             depth=1,
             defaults={"a": 2, "b": 1e-2, "c": 3},
-            components=(("a",), ("b",), ("c",)),
+            groups=(("a",), ("b",), ("c",)),
             metric="valid_acc",
             mode="max",
             seed=2**seed + seed,
@@ -254,18 +254,18 @@ def test_old_component_new_best_override():
         for i in range(3):
             searcher.suggest(f"a{i}")
         searcher.on_trial_complete("a0", {"valid_acc": 0.9})
-        assert searcher.curr_comp == 0
+        assert searcher.curr_group == 0
 
         for i in range(6):
             searcher.suggest(f"b{i}")
             searcher.on_trial_complete(f"b{i}", {"valid_acc": 0})
-        assert searcher.curr_comp == 1
+        assert searcher.curr_group == 1
 
         searcher.suggest("c0")
-        assert searcher.curr_comp == 2
+        assert searcher.curr_group == 2
 
         searcher.on_trial_complete("a1", {"valid_acc": 0.99})
-        assert searcher.curr_comp == 1
+        assert searcher.curr_group == 1
         assert searcher.defaults["a"] == searcher.id_to_config["a1"]["a"]
         assert len(searcher.curr_searcher.in_progress) == 0
         assert len(searcher.curr_searcher.all_deployed) == 0
