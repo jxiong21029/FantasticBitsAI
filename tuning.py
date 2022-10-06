@@ -1,6 +1,6 @@
 import itertools
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -258,17 +258,13 @@ class IntervalHalvingSearch(Searcher):
 
 
 @dataclass
-class ICSearchNode:
-    config: dict
+class IndependentGroupsNode:
+    parent: "IndependentGroupsNode"
+    parent_config: dict
     group: int
-
-    def __hash__(self):
-        return hash(
-            tuple(self.config[k] for k in sorted(self.config.keys())) + (self.group,)
-        )
-
-    def __eq__(self, other):
-        return self.config == other.config and self.group == other.group
+    searcher: IntervalHalvingSearch = None
+    expanded: bool = False
+    deepest: bool = False
 
 
 class IndependentGroupsSearch(Searcher):
@@ -282,7 +278,6 @@ class IndependentGroupsSearch(Searcher):
         mode: str,
         repeat=1,
         seed=None,
-        verbose=False,
     ):
         if search_space.keys() != defaults.keys():
             raise ValueError("expected search_space and defaults to have same keys")
@@ -292,172 +287,88 @@ class IndependentGroupsSearch(Searcher):
                     raise ValueError("expected group keys to be in search_space")
 
         super().__init__(metric=metric, mode=mode)
-        self.depth = depth
-        self.seed = seed
-        self.verbose = verbose
-
         self.search_space = search_space
+        self.depth = depth
         self.groups = groups * repeat
         self.defaults = defaults
 
-        self.searcher_best = IntervalHalvingSearch(
+        self.nodes = [
+            IndependentGroupsNode(
+                parent=None,
+                parent_config=self.defaults,
+                group=0,
+                expanded=True,
+            )
+        ]
+        self.best_config = {}
+        self.best_score = {}
+        self.in_progress = {}
+
+        self.rng = np.random.default_rng(seed)
+
+    def init_search(self, node: IndependentGroupsNode):
+        node.searcher = IntervalHalvingSearch(
             {
-                k: v if k in self.groups[0] else defaults[k]
+                k: v if k in self.groups[node.group] else node.parent_config[k]
                 for k, v in self.search_space.items()
             },
             depth=self.depth,
             metric=self.metric,
             mode=self.mode,
+            seed=self.rng.integers(2**31),
         )
-        self.searcher_greedy = None
-        self.best_candidates = {}
-        self.greedy_candidates = (
-            []
-        )  # stores a queue of nodes which could be searched greedily
-        self.curr_group = 0
-        self.best_config = [None for _ in range(len(self.groups))]
-        self.best_score = [None for _ in range(len(self.groups))]
-        self.id_to_group = {}
-        self.id_to_config = {}
 
     def suggest(self, trial_id):
-        if self.searcher_best is not None:
-            suggestion = self.searcher_best.suggest(trial_id)
-            if suggestion == Searcher.FINISHED:
-                self.searcher_best = None
-            elif (
-                self.searcher_best.in_progress[trial_id].depth
-                == self.searcher_best.max_depth
+        self.nodes = deque(sorted(self.nodes, key=lambda n: n.group))
+        while self.nodes:
+            selected = self.nodes[0]
+            if (
+                selected.group - 1 in self.best_config
+                and self.best_config[selected.group - 1] != selected.parent_config
             ):
-                self.greedy_candidates.append(ICSearchNode(suggestion, self.curr_group))
-        else:
-            suggestion = self.searcher_greedy.suggest(trial_id)
+                self.nodes.popleft()
+                continue
+            if selected.searcher is None:
+                self.init_search(selected)
+            suggestion = selected.searcher.suggest(trial_id)
             if suggestion == Searcher.FINISHED:
-                self.searcher_greedy = None
-            elif (
-                self.searcher_greedy.in_progress[trial_id].depth
-                == self.searcher_greedy.max_depth
-            ):
-                self.greedy_candidates.append(ICSearchNode(suggestion, self.curr_group))
-
-        if suggestion != Searcher.FINISHED:
-            self.id_to_group[trial_id] = self.curr_group
-            self.id_to_config[trial_id] = suggestion
-            return suggestion
-        else:
-            if self.searcher_greedy is not None:
-                return self.suggest(trial_id)
-
-            self.curr_group = min(
-                candidate.group
-                for candidate in self.greedy_candidates
+                self.nodes.popleft()
+                continue
+            self.in_progress[trial_id] = IndependentGroupsNode(
+                parent=selected,
+                parent_config=suggestion,
+                group=selected.group + 1,
+                deepest=(
+                    selected.searcher.in_progress[trial_id].depth
+                    == selected.searcher.max_depth
+                ),
             )
-            if len(self.best_candidates) > 0:
-                self.curr_group = min(self.curr_group, min(self.best_candidates.keys()))
+            return suggestion
 
-            if self.curr_group in self.best_candidates.keys():
-                selected_config = self.best_candidates.pop(self.curr_group)
-                self.searcher_best = IntervalHalvingSearch(
-                    {
-                        k: v
-                        if k in self.groups[self.curr_group]
-                        else selected_config[k]
-                        for k, v in self.search_space.items()
-                    },
-                    depth=self.depth,
-                    metric=self.metric,
-                    mode=self.mode,
-                )
-            elif (
-                len(
-                    valid_greedy_candidates := [
-                        candidate
-                        for candidate in self.greedy_candidates
-                        if candidate.group == self.curr_group
-                    ]
-                )
-                > 0
-            ):
-                selected = valid_greedy_candidates[0]
-                self.greedy_candidates.remove(selected)
-                self.searcher_greedy = IntervalHalvingSearch(
-                    {
-                        k: v
-                        if k in self.groups[self.curr_group]
-                        else selected.config[k]
-                        for k, v in self.search_space.items()
-                    },
-                    depth=self.depth,
-                    metric=self.metric,
-                    mode=self.mode,
-                )
-            else:
-                return Searcher.FINISHED
-            return self.suggest(trial_id)
-
-            # PROBLEM: we only want searcher_greedy to be rooted at an in-progress
-            # config, while searcher_best is rooted at a known possible best. When
-            # searcher_best runs out, we want to suggest from
-
-            # wait.
-
-            # okay. this algorithm is different from the other searcher because
-            # 1. there are no overlaps between two node's descendants
-            # 2. nodes are expanded gradually  <--  this is the important one.
-
-            # since nodes are expanded gradually, we don't want to immediately fully
-            # expand each node and then discard like in interval halving: instead,
-
-            # yield from whatever config... has the lowest group number...
+        for node in self.in_progress.values():
+            if node.group < len(self.groups) and not node.expanded and node.deepest:
+                node.expanded = True
+                self.nodes.append(node)
+                return self.suggest(trial_id)
+        return Searcher.FINISHED
 
     def on_trial_complete(self, trial_id, result=None, error=False):
-        # TODO: 2 cases
-        #   case 1: beats known best / first result in group
-        #       a. preceding group: reset and expand if not already explored
-        #           -> need to keep track of which nodes have been expanded
-        #           -> in this context 'expand' refers to
-        #       b. current group, same search: nothing
-        #       c. current group, diff search: nothing
-        #       d. following group: nothing
-        #   case 2: loses to best: nothing
+        node = self.in_progress[trial_id]
+        node.parent.searcher.on_trial_complete(trial_id, result, error)
 
-        trial_group = self.id_to_group[trial_id]
-        trial_config = self.id_to_config[trial_id]
         score = result[self.metric]
-        if (
-            self.best_score[trial_group] is None
+        if node.deepest and (
+            node.group - 1 not in self.best_score
             or self.mode == "max"
-            and score > self.best_score[trial_group]
+            and score > self.best_score[node.group - 1]
             or self.mode == "min"
-            and score < self.best_score[trial_group]
+            and score < self.best_score[node.group - 1]
         ):
-            if trial_group < self.curr_group:
-                selected = None
-                for candidate in self.greedy_candidates:
-                    if (
-                        candidate.group == trial_group
-                        and candidate.config == trial_config
-                    ):
-                        selected = candidate
-                        break
-                if selected is not None:  # selected is None if node already expanded?
-                    self.greedy_candidates.remove(selected)
-                    self.curr_group = trial_group + 1
-                    self.searcher_best = IntervalHalvingSearch(
-                        {
-                            k: trial_config[k]
-                            if k in self.groups[self.curr_group]
-                            else v
-                            for k, v in self.search_space.items()
-                        },
-                        depth=self.depth,
-                        metric=self.metric,
-                        mode=self.mode,
-                    )
-
-            self.best_score[trial_group] = score
-            self.best_config[trial_group] = trial_config
-            self.best_candidates[trial_group] = trial_config
+            self.best_score[node.group - 1] = score
+            self.best_config[node.group - 1] = node.parent_config
+            if node.group < len(self.groups) and not node.expanded and node.deepest:
+                self.nodes.append(node)
+        del self.in_progress[trial_id]
 
 
 def train(config):

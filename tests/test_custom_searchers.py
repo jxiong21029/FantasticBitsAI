@@ -142,132 +142,166 @@ def test_special_search_spaces_suggestion_count(searcher_2):
     assert not isinstance(searcher_2.suggest("last"), dict)
 
 
-def test_independent_groups_search():
-    for seed in range(10):
-        searcher = IndependentGroupsSearch(
-            search_space={
-                "lr": log_halving_search(1e-5, 1e-3, 1e-1),
-                "batch_size": grid_search(32, 64),
-                "weight_decay": log_halving_search(1e-5, 1e-3, 1e-1),
-                "dropout": grid_search(0.1, 0.2, 0.3),
-                "n_layers": 2,
-            },
-            depth=2,
-            defaults={
-                "lr": 1e-4,
-                "batch_size": 64,
-                "weight_decay": 1e-4,
-                "dropout": 0.2,
-                "n_layers": 2,
-            },
-            groups=(
-                ("lr", "batch_size"),
-                ("weight_decay", "dropout"),
-            ),
-            metric="val_acc",
-            mode="max",
-            repeat=2,
-            seed=2**seed + seed,
+@pytest.fixture
+def group_searchers_big_50():
+    ret = []
+    for seed in range(50):
+        ret.append(
+            IndependentGroupsSearch(
+                search_space={
+                    "lr": log_halving_search(1e-5, 1e-3, 1e-1),
+                    "batch_size": grid_search(32, 64),
+                    "weight_decay": log_halving_search(1e-5, 1e-3, 1e-1),
+                    "dropout": grid_search(0.1, 0.2, 0.3),
+                    "n_layers": 2,
+                },
+                depth=2,
+                defaults={
+                    "lr": 1e-4,
+                    "batch_size": 64,
+                    "weight_decay": 1e-4,
+                    "dropout": 0.2,
+                    "n_layers": 2,
+                },
+                groups=(
+                    ("lr", "batch_size"),
+                    ("weight_decay", "dropout"),
+                ),
+                metric="val_acc",
+                mode="max",
+                seed=2**seed - seed,
+            )
         )
-        s0 = searcher.suggest("0")
-        s1 = searcher.suggest("1")
-        searcher.on_trial_complete("0", {"val_acc": 0.99})
+    return ret
 
-        assert (s0["lr"] != s1["lr"]) or (s0["batch_size"] != s1["batch_size"])
-        assert s0["weight_decay"] == s1["weight_decay"] == 1e-4
-        assert s0["dropout"] == s1["dropout"] == 0.2
-        assert s0["n_layers"] == s1["n_layers"] == 2
 
-        other_suggestions = []
-        for i in range(2, 2 * (3 + 7 + 15)):
-            other_suggestions.append(searcher.suggest(str(i)))
+@pytest.fixture
+def rng_50():
+    rng = np.random.default_rng(2**16 - 1)
+    ret = []
+    for seed in range(50):
+        ret.append(np.random.default_rng(seed=rng.integers(2**31)))
+    return ret
 
-        assert searcher.curr_group == 0
-        sa = searcher.suggest("a")
-        assert searcher.curr_group == 1
-        sb = searcher.suggest("b")
-        assert searcher.curr_group == 1
 
-        assert (sa["weight_decay"] != sb["weight_decay"]) or (
-            sa["dropout"] != sb["dropout"]
+def test_independent_groups_search_parameters(group_searchers_big_50):
+    for searcher in group_searchers_big_50:
+        for i in range(3 + 7 + 15):
+            a = searcher.suggest(f"a{i}")
+            b = searcher.suggest(f"b{i}")
+
+            assert (a["lr"] != b["lr"]) or (a["batch_size"] != b["batch_size"])
+            assert a["weight_decay"] == b["weight_decay"] == 1e-4
+            assert a["dropout"] == b["dropout"] == 0.2
+            assert a["n_layers"] == b["n_layers"] == 2
+
+        b0 = searcher.suggest("b0")
+        b1 = searcher.suggest("b1")
+
+        assert (b0["weight_decay"] != b1["weight_decay"]) or (
+            b0["dropout"] != b1["dropout"]
         )
-        assert sa["lr"] == sb["lr"]
-        assert sa["batch_size"] == sb["batch_size"]
+        assert b0["lr"] == b1["lr"]
+        assert b0["batch_size"] == b1["batch_size"]
 
-        for i, s in enumerate(other_suggestions):
-            if s["lr"] != s0["lr"]:
-                assert searcher.id_to_config[str(i + 2)] == s
-                searcher.on_trial_complete(str(i + 2), {"val_acc": 0.999})
+
+def test_independent_groups_maximum_trials(group_searchers_big_50):
+    first = 3 * 2 + 7 * 2 + 15 * 2
+    second = 3 * 3 + 7 * 3 + 15 * 3
+    correct = first + 15 * 2 * second
+    for searcher in group_searchers_big_50[:5]:
+        i = 0
+        while True:
+            suggestion = searcher.suggest(str(i))
+            if suggestion == searcher.FINISHED:
                 break
+            i += 1
+        assert i == correct
 
-        assert len(searcher.curr_searcher.in_progress) == 0
+
+def test_independent_groups_minimum_trials(group_searchers_big_50, rng_50):
+    correct = 6 * 3 + 9 * 3
+    for searcher, rng in zip(group_searchers_big_50, rng_50):
+        i = 0
+        while True:
+            suggestion = searcher.suggest(str(i))
+            if suggestion == searcher.FINISHED:
+                break
+            searcher.on_trial_complete(str(i), {"val_acc": rng.random()})
+            i += 1
+        if i == 18:
+            breakpoint()
+        assert i == correct
 
 
-def test_independent_groups_no_wasted_sweeps():
+def test_independent_groups_stress(group_searchers_big_50, rng_50):
+    for iteration, (searcher, rng) in enumerate(zip(group_searchers_big_50, rng_50)):
+        always_incr = iteration < 25
+
+        if iteration < 5:
+            p = 0
+        elif iteration < 10:
+            p = 0.03
+        elif iteration < 15:
+            p = 0.97
+        elif iteration < 20:
+            p = 1
+        else:
+            p = rng.random()
+
+        i = 0
+        in_prog = set()
+        score = rng.random()
+        while True:
+            if searcher.suggest(str(i)) == searcher.FINISHED:
+                break
+            in_prog.add(str(i))
+            if rng.random() < p:
+                rm = rng.choice(list(in_prog))
+                in_prog.remove(rm)
+                searcher.on_trial_complete(rm, {"val_acc": score})
+
+            if always_incr:
+                score = 1 - (1 - score) * 0.99
+            else:
+                score = rng.random()
+            i += 1
+
+
+def test_independent_groups_just_one():
     searcher = IndependentGroupsSearch(
-        {
-            "a": q_uniform_halving_search(1, 2, 3),
-            "b": 1,
-            "c": grid_search(1, 2),
-            "d": grid_search(1, 2, 3),
-            "e": grid_search(1, 2, 3, 4, 5),
-            "f": log_halving_search(1e-3, 1e-2, 1e-1),
-        },
-        depth=1,
-        defaults={
-            "a": 1,
-            "b": 1,
-            "c": 2,
-            "d": 2,
-            "e": 3,
-            "f": 1e-2,
-        },
-        groups=(("c",), ("d", "e")),
+        search_space={"a": grid_search(1)},
+        depth=99,
+        defaults={"a": 1},
+        groups=(("a",),),
         metric="whatever",
         mode="max",
-        repeat=2,
     )
+    assert isinstance(searcher.suggest("0"), dict)
+    assert searcher.suggest("1") == searcher.FINISHED
 
-    suggestions = []
-    for i in range(999):
-        suggestions.append(searcher.suggest(str(i)))
-    suggestions = [s for s in suggestions if isinstance(s, dict)]
-    assert len(suggestions) == 900
+    searcher_2 = IndependentGroupsSearch(
+        search_space={"a": grid_search(1), "b": grid_search(2)},
+        depth=99,
+        defaults={"a": 1, "b": 2},
+        groups=(("a", "b"),),
+        metric="whatever",
+        mode="max",
+    )
+    assert isinstance(searcher_2.suggest("0"), dict)
+    assert searcher_2.suggest("1") == searcher_2.FINISHED
+
+    searcher_3 = IndependentGroupsSearch(
+        search_space={"a": grid_search(1), "b": grid_search(2)},
+        depth=99,
+        defaults={"a": 1, "b": 2},
+        groups=(("a",), ("b",)),
+        metric="whatever",
+        mode="max",
+    )
+    assert isinstance(searcher_3.suggest("0"), dict)
+    assert isinstance(searcher_3.suggest("1"), dict)
+    assert searcher_3.suggest("2") == searcher_3.FINISHED
 
 
-def test_old_group_new_best_override():
-    for seed in range(10):
-        searcher = IndependentGroupsSearch(
-            {
-                "a": grid_search(1, 2, 3),
-                "b": log_halving_search(1e-3, 1e-2, 1e-1),
-                "c": grid_search(1, 2, 3),
-            },
-            depth=1,
-            defaults={"a": 2, "b": 1e-2, "c": 3},
-            groups=(("a",), ("b",), ("c",)),
-            metric="valid_acc",
-            mode="max",
-            seed=2**seed + seed,
-        )
-
-        for i in range(3):
-            searcher.suggest(f"a{i}")
-        searcher.on_trial_complete("a0", {"valid_acc": 0.9})
-        assert searcher.curr_group == 0
-
-        for i in range(6):
-            searcher.suggest(f"b{i}")
-            searcher.on_trial_complete(f"b{i}", {"valid_acc": 0})
-        assert searcher.curr_group == 1
-
-        searcher.suggest("c0")
-        assert searcher.curr_group == 2
-
-        searcher.on_trial_complete("a1", {"valid_acc": 0.99})
-        assert searcher.curr_group == 1
-        assert searcher.defaults["a"] == searcher.id_to_config["a1"]["a"]
-        assert len(searcher.curr_searcher.in_progress) == 0
-        assert len(searcher.curr_searcher.all_deployed) == 0
-
-        searcher.on_trial_complete("c0", {"valid_acc": 0.999})
+# TODO: write a test which reports half of the results in a group
