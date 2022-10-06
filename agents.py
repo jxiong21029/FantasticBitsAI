@@ -171,7 +171,6 @@ class Agents(nn.Module):
             mu = logits[:, :2]
             if self.norm_target_mean:
                 mu = mu / torch.norm(mu, dim=1, keepdim=True)
-                assert torch.isclose(mu[0][0] ** 2 + mu[0][1] ** 2, torch.tensor(1.0))  # TODO: remove
             sigma = F.softplus(
                 logits[:, 2:] + self._std_offset.to(device=logits.device)
             )

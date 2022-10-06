@@ -1,6 +1,6 @@
 import itertools
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -64,6 +64,7 @@ class IntervalHalvingSearch(Searcher):
         self.rng = np.random.default_rng(seed=seed)
 
         self.max_depth = depth
+        self.search_space = search_space
         self.grid_searches = {}
         self.keys = list(search_space.keys())
 
@@ -246,7 +247,7 @@ class IntervalHalvingSearch(Searcher):
             self.best_scores[node.depth] = result[self.metric]
             self.best_configs[node.depth] = node.config
 
-            if node.depth < self.max_depth:
+            if node.depth < self.max_depth and not node.expanded:
                 node.expanded = True
                 for config in self.config_neighbors(node.config, node.depth + 1):
                     self.candidates.append(
@@ -256,108 +257,119 @@ class IntervalHalvingSearch(Searcher):
         del self.in_progress[trial_id]
 
 
-class IndependentComponentsSearch(Searcher):
+@dataclass
+class IndependentGroupsNode:
+    parent: "IndependentGroupsNode"
+    parent_config: dict
+    group: int
+    searcher: IntervalHalvingSearch = None
+    expanded: bool = False
+    deepest: bool = False
+
+
+class IndependentGroupsSearch(Searcher):
     def __init__(
         self,
         search_space: dict,
         depth: int,
         defaults: dict,
-        components: tuple,
+        groups: tuple,
         metric: str,
         mode: str,
         repeat=1,
         seed=None,
-        verbose=False,
     ):
         if search_space.keys() != defaults.keys():
             raise ValueError("expected search_space and defaults to have same keys")
-        for comp in components:
-            for k in comp:
+        for group in groups:
+            for k in group:
                 if k not in search_space.keys():
-                    raise ValueError("expected component keys to be in search_space")
+                    raise ValueError("expected group keys to be in search_space")
 
         super().__init__(metric=metric, mode=mode)
-        self.depth = depth
-        self.seed = seed
-        self.verbose = verbose
-
-        self.components = components * repeat
         self.search_space = search_space
+        self.depth = depth
+        self.groups = groups * repeat
         self.defaults = defaults
 
-        self.curr_comp = 0
-        self.id_to_config = {}
-        self.id_to_component = {}
-        self.curr_searcher: IntervalHalvingSearch = self.init_search()
+        self.nodes = [
+            IndependentGroupsNode(
+                parent=None,
+                parent_config=self.defaults,
+                group=0,
+                expanded=True,
+            )
+        ]
+        self.best_config = {}
+        self.best_score = {}
+        self.in_progress = {}
 
-        self.best_score = [None for _ in range(len(self.components))]
-        self.best_config = [None for _ in range(len(self.components))]
-        self.done = False
+        self.rng = np.random.default_rng(seed)
 
-    def init_search(self):
-        # TODO: fix tuple out of range bug
-        search_subspace = {
-            k: (v if k in self.components[self.curr_comp] else self.defaults[k])
-            for k, v in self.search_space.items()
-        }
-        return IntervalHalvingSearch(
-            search_space=search_subspace,
+    def init_search(self, node: IndependentGroupsNode):
+        node.searcher = IntervalHalvingSearch(
+            {
+                k: v if k in self.groups[node.group] else node.parent_config[k]
+                for k, v in self.search_space.items()
+            },
             depth=self.depth,
             metric=self.metric,
             mode=self.mode,
-            seed=self.seed,
+            seed=self.rng.integers(2**31),
         )
 
     def suggest(self, trial_id):
-        if self.done:
-            return Searcher.FINISHED
-        ret = self.curr_searcher.suggest(trial_id)
+        self.nodes = deque(sorted(self.nodes, key=lambda n: n.group))
+        while self.nodes:
+            selected = self.nodes[0]
+            if (
+                selected.group - 1 in self.best_config
+                and self.best_config[selected.group - 1] != selected.parent_config
+                and selected not in self.in_progress.values()
+            ):
+                self.nodes.popleft()
+                continue
+            if selected.searcher is None:
+                self.init_search(selected)
+            suggestion = selected.searcher.suggest(trial_id)
+            if suggestion == Searcher.FINISHED:
+                self.nodes.popleft()
+                continue
+            self.in_progress[trial_id] = IndependentGroupsNode(
+                parent=selected,
+                parent_config=suggestion,
+                group=selected.group + 1,
+                deepest=(
+                    selected.searcher.in_progress[trial_id].depth
+                    == selected.searcher.max_depth
+                ),
+            )
+            return suggestion
 
-        if ret == Searcher.FINISHED:
-            self.curr_comp += 1
-            if self.curr_comp == len(self.components):
-                self.done = True
-                return Searcher.FINISHED
-            self.curr_searcher = self.init_search()
-            ret = self.curr_searcher.suggest(trial_id)
-
-        self.id_to_config[trial_id] = ret
-        self.id_to_component[trial_id] = self.curr_comp
-        return ret
+        for node in self.in_progress.values():
+            if node.group < len(self.groups) and not node.expanded and node.deepest:
+                node.expanded = True
+                self.nodes.append(node)
+                return self.suggest(trial_id)
+        return Searcher.FINISHED
 
     def on_trial_complete(self, trial_id, result=None, error=False):
-        trial_comp = self.id_to_component[trial_id]
-        if error:
-            if trial_id in self.curr_searcher.in_progress:
-                self.curr_searcher.on_trial_complete(trial_id, result, error)
-            return
+        node = self.in_progress[trial_id]
+        node.parent.searcher.on_trial_complete(trial_id, result, error)
 
         score = result[self.metric]
-        if (
-            self.best_score[trial_comp] is None
-            or (self.mode == "max" and score > self.best_score[trial_comp])
-            or (self.mode == "min" and score < self.best_score[trial_comp])
+        if node.deepest and (
+            node.group - 1 not in self.best_score
+            or self.mode == "max"
+            and score > self.best_score[node.group - 1]
+            or self.mode == "min"
+            and score < self.best_score[node.group - 1]
         ):
-
-            config = self.id_to_config[trial_id]
-            self.best_score[trial_comp] = score
-            self.best_config[trial_comp] = config
-
-            if trial_comp <= self.curr_comp:
-                reinit = False
-                for k in self.search_space.keys():
-                    if config[k] != self.defaults[k]:
-                        self.defaults[k] = config[k]
-                        if k not in self.components[self.curr_comp]:
-                            reinit = True
-                if self.verbose:
-                    print(f"new default config: {self.defaults}")
-                if reinit:
-                    self.curr_comp = trial_comp + 1
-                    self.curr_searcher = self.init_search()
-
-        if trial_id in self.curr_searcher.in_progress:
-            self.curr_searcher.on_trial_complete(trial_id, result, error)
+            self.best_score[node.group - 1] = score
+            self.best_config[node.group - 1] = node.parent_config
+            if node.group < len(self.groups) and not node.expanded and node.deepest:
+                self.nodes.append(node)
+        del self.in_progress[trial_id]
 
 
 def train(config):
@@ -409,7 +421,7 @@ def main():
 
     os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
 
-    search_alg = IndependentComponentsSearch(
+    search_alg = IndependentGroupsSearch(
         search_space={
             "lr": log_halving_search(1e-4, 1e-3, 1e-2),
             "minibatch_size": q_log_halving_search(32, 128, 512),
@@ -431,7 +443,7 @@ def main():
             "entropy_reg": 1e-5,
             "rollout_steps": 4096,
         },
-        components=(
+        groups=(
             ("lr", "minibatch_size"),
             ("weight_decay",),
             ("epochs",),
