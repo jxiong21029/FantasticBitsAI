@@ -325,6 +325,7 @@ class IndependentGroupsSearch(Searcher):
             if (
                 selected.group - 1 in self.best_config
                 and self.best_config[selected.group - 1] != selected.parent_config
+                and selected not in self.in_progress.values()
             ):
                 self.nodes.popleft()
                 continue

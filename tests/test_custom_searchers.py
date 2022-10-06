@@ -304,4 +304,53 @@ def test_independent_groups_just_one():
     assert searcher_3.suggest("2") == searcher_3.FINISHED
 
 
-# TODO: write a test which reports half of the results in a group
+def test_independent_groups_half_reported():
+    searcher = IndependentGroupsSearch(
+        {"a": log_halving_search(1e-3, 1e-2, 1e-1), "b": grid_search(4, 5, 6)},
+        depth=1,
+        defaults={"a": 1e-2, "b": 5},
+        groups=(("a",), ("b",)),
+        metric="val_loss",
+        mode="min",
+        seed=2**15 - 1,
+    )
+
+    for i in range(3):
+        suggestion = searcher.suggest(f"a{i}")
+        if suggestion["a"] == 1e-2:
+            searcher.on_trial_complete(f"a{i}", {"val_loss": 0.3})
+        else:
+            searcher.on_trial_complete(f"a{i}", {"val_loss": 0.4})
+
+    found1 = False
+    found2 = False
+    found3 = False
+    for i in range(3):
+        suggestion = searcher.suggest(f"b{i}")
+        if suggestion["a"] == 1e-2:
+            searcher.on_trial_complete(f"b{i}", {"val_loss": 0.6})
+            found1 = True
+        elif np.isclose(suggestion["a"], 10 ** (-2.5), rtol=1e-3):
+            searcher.on_trial_complete(f"b{i}", {"val_loss": 0.5})
+            found2 = True
+        else:
+            found3 = True
+
+    assert found1
+    assert found2
+    assert found3
+    assert len(searcher.in_progress) == 1
+
+    group_2_suggestions = []
+    while True:
+        suggestion = searcher.suggest(f"c{len(group_2_suggestions)}")
+        if suggestion == searcher.FINISHED:
+            break
+        group_2_suggestions.append(suggestion)
+
+    assert len(group_2_suggestions) == 6
+    for suggestion in group_2_suggestions:
+        assert np.isclose(suggestion["a"], 10 ** (-1.5), rtol=1e-3) or np.isclose(
+            suggestion["a"], 10 ** (-2.5), rtol=1e-3
+        )
+    assert set(suggestion["b"] for suggestion in group_2_suggestions) == {4, 5, 6}
