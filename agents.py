@@ -165,6 +165,8 @@ class Agents(nn.Module):
             logits[~throw_turns] = self.move_head(embed[~throw_turns])
 
             mu = logits[:, :2]
+            if self.norm_target_mean:
+                mu = mu / torch.norm(mu, dim=1, keepdim=True)
             sigma = F.softplus(
                 logits[:, 2:] + self._std_offset.to(device=logits.device)
             )
