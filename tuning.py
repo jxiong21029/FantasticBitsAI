@@ -163,8 +163,8 @@ class IntervalHalvingSearch(Searcher):
                 SearchNode({k: v for k, v in zip(self.keys, cfg)}, None, 0)
             )
 
-        self.best_configs = {}
-        self.best_scores = {}
+        self.best_config = {}
+        self.best_score = {}
         self.in_progress = {}
         self.all_deployed = set()
 
@@ -185,8 +185,8 @@ class IntervalHalvingSearch(Searcher):
             node
             for node in self.candidates
             if (
-                node.depth - 1 not in self.best_configs
-                or node.parent_config == self.best_configs[node.depth - 1]
+                node.depth - 1 not in self.best_config
+                or node.parent_config == self.best_config[node.depth - 1]
                 or node.parent_config
                 in [
                     n.config
@@ -234,18 +234,16 @@ class IntervalHalvingSearch(Searcher):
 
         node = self.in_progress[trial_id]
         if (
-            node.depth not in self.best_configs
+            node.depth not in self.best_config
             or (
-                self.mode == "max"
-                and result[self.metric] > self.best_scores[node.depth]
+                self.mode == "max" and result[self.metric] > self.best_score[node.depth]
             )
             or (
-                self.mode == "min"
-                and result[self.metric] < self.best_scores[node.depth]
+                self.mode == "min" and result[self.metric] < self.best_score[node.depth]
             )
         ):
-            self.best_scores[node.depth] = result[self.metric]
-            self.best_configs[node.depth] = node.config
+            self.best_score[node.depth] = result[self.metric]
+            self.best_config[node.depth] = node.config
 
             if node.depth < self.max_depth and not node.expanded:
                 node.expanded = True
@@ -357,6 +355,10 @@ class IndependentGroupsSearch(Searcher):
         node = self.in_progress[trial_id]
         node.parent.searcher.on_trial_complete(trial_id, result, error)
 
+        del self.in_progress[trial_id]
+        if error:
+            return
+
         score = result[self.metric]
         if node.deepest and (
             node.group - 1 not in self.best_score
@@ -369,7 +371,6 @@ class IndependentGroupsSearch(Searcher):
             self.best_config[node.group - 1] = node.parent_config
             if node.group < len(self.groups) and not node.expanded and node.deepest:
                 self.nodes.append(node)
-        del self.in_progress[trial_id]
 
 
 def train(config):

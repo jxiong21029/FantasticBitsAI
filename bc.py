@@ -7,12 +7,7 @@ from ray import air, tune
 
 from agents import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
-from tuning import (
-    IndependentComponentsSearch,
-    grid_search,
-    log_halving_search,
-    q_log_halving_search,
-)
+from tuning import IntervalHalvingSearch, log_halving_search
 from utils import Logger, grad_norm
 
 
@@ -180,7 +175,8 @@ def train(config):
             num_layers=config["num_layers"],
             d_model=config["d_model"],
             nhead=config["nhead"],
-            norm_target_mean=config["norm_target_mean"],
+            action_parameterization=config["action_parameterization"],
+            dispersion_scale=config["dispersion_scale"],
         ),
         "../../../data/basic_demo.pickle",
         lr=config["lr"],
@@ -196,57 +192,57 @@ def train(config):
 
 
 def main():
-    search_alg = IndependentComponentsSearch(
-        search_space={
-            "lr": log_halving_search(1e-4, 1e-3, 1e-2),
-            "minibatch_size": q_log_halving_search(32, 128, 512),
-            "weight_decay": log_halving_search(1e-7, 1e-5, 1e-3),
-            "num_layers": grid_search(1, 2, 3),
-            "d_model": q_log_halving_search(8, 32, 128),
-            "nhead": grid_search(1, 2, 4),
-            "norm_target_mean": grid_search(True, False),
-        },
-        depth=1,
-        defaults={
-            "lr": 1e-4,
-            "minibatch_size": 64,
-            "weight_decay": 1e-4,
-            "num_layers": 1,
-            "d_model": 32,
-            "nhead": 2,
-            "norm_target_mean": False,
-        },
-        components=(
-            ("norm_target_mean",),
-            ("lr", "minibatch_size", "num_layers"),
-            ("lr", "d_model"),
-            ("nhead",),
-            ("weight_decay",),
-        ),
-        metric="eval_goals_scored_mean",
-        mode="max",
-        verbose=True,
-    )
+    for action_parameterization in ("euclidean", "normed_euclidean", "von_mises"):
+        search_alg = IntervalHalvingSearch(
+            search_space={
+                "action_parameterization": action_parameterization,
+                "lr": log_halving_search(1e-4, 1e-3, 1e-2),
+                "dispersion_scale": log_halving_search(1e-1, 1e0, 1e1),
+                "minibatch_size": 128,
+                "weight_decay": 1e-5,
+                "num_layers": 1,
+                "d_model": 32,
+                "nhead": 2,
+            },
+            depth=2,
+            metric="eval_goals_scored_mean",
+            mode="max",
+        )
 
-    tuner = tune.Tuner(
-        train,
-        tune_config=tune.TuneConfig(
-            num_samples=-1,
-            search_alg=search_alg,
-            max_concurrent_trials=8,
-        ),
-        run_config=air.RunConfig(
-            name="bc_tune",
-            local_dir="ray_results/",
-            verbose=0,
-        ),
-    )
-    tuner.fit()
+        tuner = tune.Tuner(
+            train,
+            tune_config=tune.TuneConfig(
+                num_samples=-1,
+                search_alg=search_alg,
+                max_concurrent_trials=8,
+            ),
+            run_config=air.RunConfig(
+                name="action_parameterization",
+                local_dir="ray_results/",
+            ),
+        )
+        tuner.fit()
 
-    print("best score:", search_alg.best_score)
-    print("best config:", search_alg.best_config)
+        print(f"results for {action_parameterization=}")
+        print("best score:", search_alg.best_score)
+        print("best config:", search_alg.best_config)
+
+
+def main2():
+    trainer = BCTrainer(
+        Agents(action_parameterization="von_mises"),
+        demo_filename="data/basic_demo.pickle",
+        lr=1e-3,
+        minibatch_size=128,
+        weight_decay=1e-5,
+        grad_clipping=10.0,
+    )
+    trainer.train()
+    trainer.evaluate()
+    print({k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
 
 
 if __name__ == "__main__":
     # generate_demonstrations(100)
-    main()
+    # main()
+    main2()
