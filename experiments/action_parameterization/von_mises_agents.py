@@ -8,9 +8,8 @@ from architectures import Encoder
 
 
 class VonMisesAgents(nn.Module):
-    def __init__(self, num_layers=1, d_model=32, nhead=2, dispersion_scale=1.0):
+    def __init__(self, num_layers=1, d_model=32, nhead=2):
         super().__init__()
-        self.dispersion_scale = dispersion_scale
 
         self.policy_encoder = Encoder(num_layers, d_model, nhead)
         self.value_encoder = Encoder(num_layers, d_model, nhead)
@@ -48,9 +47,7 @@ class VonMisesAgents(nn.Module):
                 x = logits[0]
                 y = logits[1]
                 angle = torch.atan2(y, x)
-                concentration = F.softplus(logits[2] / self.dispersion_scale).clamp(
-                    min=0.001
-                )
+                concentration = F.softplus(logits[2]) + 1e-3
                 distr = distributions.VonMises(angle, concentration)
 
                 action = distr.sample()
@@ -92,9 +89,7 @@ class VonMisesAgents(nn.Module):
 
             x = logits[:, 0]
             y = logits[:, 1]
-            concentration = F.softplus(logits[:, 2] / self.dispersion_scale).clamp(
-                min=0.001
-            )
+            concentration = F.softplus(logits[:, 2]) + 1e-3
             distrs.append(distributions.VonMises(torch.atan2(y, x), concentration))
 
             angles = torch.atan2(actions_taken[:, 1], actions_taken[:, 0])

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.distributions as distributions
 
-concentrations = [0.1, 1.0, 10.0]
+concentrations = [0.01, 0.03, 0.1, 0.3]
 theta = np.linspace(0, 2 * np.pi, 1000)
 
 matplotlib.use("Tkagg")

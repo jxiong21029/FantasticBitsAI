@@ -72,17 +72,23 @@ class Entity(Point):
                 yield col
                 break
 
-        endx = self.x + self.vx
-        endy = self.y + self.vy
-        if endx < self.rad:
-            yield Collision(self, Boundary.LEFT, (self.rad - self.x) / self.vx)
-        elif endx > 16000 - self.rad:
-            yield Collision(self, Boundary.RIGHT, (16000 - self.rad - self.x) / self.vx)
+        if self.vx != 0:
+            endx = self.x + self.vx
+            if endx < self.rad:
+                yield Collision(self, Boundary.LEFT, (self.rad - self.x) / self.vx)
+            elif endx > 16000 - self.rad:
+                yield Collision(
+                    self, Boundary.RIGHT, (16000 - self.rad - self.x) / self.vx
+                )
 
-        if endy < self.rad:
-            yield Collision(self, Boundary.TOP, (self.rad - self.y) / self.vy)
-        elif endy > 7500 - self.rad:
-            yield Collision(self, Boundary.BOTTOM, (7500 - self.rad - self.y) / self.vy)
+        if self.vy != 0:
+            endy = self.y + self.vy
+            if endy < self.rad:
+                yield Collision(self, Boundary.TOP, (self.rad - self.y) / self.vy)
+            elif endy > 7500 - self.rad:
+                yield Collision(
+                    self, Boundary.BOTTOM, (7500 - self.rad - self.y) / self.vy
+                )
 
     def collision(self, other):
         # Sum of the radii squared
@@ -214,6 +220,9 @@ class Wizard(Entity):
         if isinstance(other, Snaffle):
             if self.grab_cd > 0:
                 return None
+            if self.distance(other) < self.rad:
+                return Collision(self, other, 0)
+
             old_rad = other.rad
             try:
                 other.rad = 0
