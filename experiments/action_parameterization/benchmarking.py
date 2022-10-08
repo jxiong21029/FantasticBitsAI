@@ -129,6 +129,36 @@ def logp_backprop_benchmark():
     print(f"von Mises backprop, from coords: {end - start:.3f}s")
 
 
-sampling_benchmark()
-sample_logp_benchmark()
-logp_backprop_benchmark()
+def benchmark_extreme_samples():
+    import signal
+
+    class Timeout:
+        def __init__(self, seconds=1, error_message="Timeout"):
+            self.seconds = seconds
+            self.error_message = error_message
+
+        def handle_timeout(self, signum, frame):
+            raise TimeoutError(self.error_message)
+
+        def __enter__(self):
+            signal.signal(signal.SIGALRM, self.handle_timeout)
+            signal.alarm(self.seconds)
+
+        def __exit__(self, type, value, traceback):
+            signal.alarm(0)
+
+    start = -5
+    end = 0
+    while end - start > 0.0001:
+        mid = (start + end) / 2
+        try:
+            with Timeout(seconds=1):
+                for _ in range(100):
+                    distributions.VonMises(0, 10**mid).sample()
+            end = mid
+        except TimeoutError:
+            start = mid
+    print(start, end)
+
+
+benchmark_extreme_samples()

@@ -8,9 +8,9 @@ import torch
 from ray import air, tune
 from ray.tune.search import Searcher
 
-from agents import Agents
+from architectures import Agents
 from env import FantasticBits
-from ppo import Trainer
+from ppo import PPOTrainer
 
 
 def log_halving_search(*values):  # could be used for learning rate
@@ -381,7 +381,7 @@ def train(config):
 
     results = []
     for run in range(3):
-        trainer = Trainer(
+        trainer = PPOTrainer(
             Agents(),
             FantasticBits,
             lr=config["lr"],

@@ -3,11 +3,9 @@ import pickle
 import numpy as np
 import torch
 import tqdm
-from ray import air, tune
 
-from agents import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
-from tuning import IntervalHalvingSearch, log_halving_search
+from trainer import Trainer
 from utils import Logger, grad_norm
 
 
@@ -84,7 +82,7 @@ def generate_demonstrations(num_episodes=50):
         pickle.dump((ret_obs, ret_act), f)
 
 
-class BCTrainer:
+class BCTrainer(Trainer):
     def __init__(
         self,
         agents,
@@ -93,9 +91,11 @@ class BCTrainer:
         minibatch_size,
         weight_decay,
         grad_clipping,
+        env_kwargs=None,
         seed=None,
     ):
-        self.agents = agents
+        super().__init__(env_kwargs=env_kwargs, seed=seed)
+        self._agents = agents
         self.optim = torch.optim.Adam(
             agents.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -117,6 +117,10 @@ class BCTrainer:
 
         self.rng = np.random.default_rng(seed=seed)
         self.logger = Logger()
+
+    @property
+    def agents(self):
+        return self._agents
 
     def train(self):
         idx = np.arange(self.demo_sz)
@@ -146,91 +150,12 @@ class BCTrainer:
 
         self.logger.step()
 
-    def evaluate(self, num_episodes=50):
-        temp_logger = Logger()
-        eval_env = FantasticBits(
-            bludgers_enabled=True, opponents_enabled=True, logger=temp_logger
-        )
-        for _ in range(num_episodes):
-            obs = eval_env.reset()
-            done = False
-            while not done:
-                with torch.no_grad():
-                    actions, _ = self.agents.step(obs)
-                obs, _, done = eval_env.step(actions)
-        temp_logger.step()
-        self.logger.cumulative_data.update(
-            {"eval_" + k: v for k, v in temp_logger.cumulative_data.items()}
-        )
-
-
-# TODO: fix behavioral cloning loss, use cosine angle? normalize to length 1 mean?
-# TODO: tune behavioral cloning, analyze data scaling
-# TODO: use behavioral cloning performance as a proxy for RL model capacity
-
-
-def train(config):
-    trainer = BCTrainer(
-        Agents(
-            num_layers=config["num_layers"],
-            d_model=config["d_model"],
-            nhead=config["nhead"],
-            action_parameterization=config["action_parameterization"],
-            dispersion_scale=config["dispersion_scale"],
-        ),
-        "../../../data/basic_demo.pickle",
-        lr=config["lr"],
-        minibatch_size=config["minibatch_size"],
-        weight_decay=config["weight_decay"],
-        grad_clipping=None,
-    )
-    for i in range(101):
-        trainer.train()
-        if i % 20 == 0:
-            trainer.evaluate()
-            tune.report(**{k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
-
 
 def main():
-    for action_parameterization in ("euclidean", "normed_euclidean", "von_mises"):
-        search_alg = IntervalHalvingSearch(
-            search_space={
-                "action_parameterization": action_parameterization,
-                "lr": log_halving_search(1e-4, 1e-3, 1e-2),
-                "dispersion_scale": log_halving_search(1e-1, 1e0, 1e1),
-                "minibatch_size": 128,
-                "weight_decay": 1e-5,
-                "num_layers": 1,
-                "d_model": 32,
-                "nhead": 2,
-            },
-            depth=2,
-            metric="eval_goals_scored_mean",
-            mode="max",
-        )
+    from architectures import Agents
 
-        tuner = tune.Tuner(
-            train,
-            tune_config=tune.TuneConfig(
-                num_samples=-1,
-                search_alg=search_alg,
-                max_concurrent_trials=8,
-            ),
-            run_config=air.RunConfig(
-                name="action_parameterization",
-                local_dir="ray_results/",
-            ),
-        )
-        tuner.fit()
-
-        print(f"results for {action_parameterization=}")
-        print("best score:", search_alg.best_score)
-        print("best config:", search_alg.best_config)
-
-
-def main2():
     trainer = BCTrainer(
-        Agents(action_parameterization="von_mises"),
+        Agents(),
         demo_filename="data/basic_demo.pickle",
         lr=1e-3,
         minibatch_size=128,
@@ -238,11 +163,8 @@ def main2():
         grad_clipping=10.0,
     )
     trainer.train()
-    trainer.evaluate()
-    print({k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
+    trainer.evaluate_with_render()
 
 
 if __name__ == "__main__":
-    # generate_demonstrations(100)
-    # main()
-    main2()
+    main()

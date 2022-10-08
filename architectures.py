@@ -95,24 +95,16 @@ class Agents(nn.Module):
         num_layers=1,
         d_model=32,
         nhead=2,
-        action_parameterization="euclidean",
-        dispersion_scale=1.0,
+        norm_action_mean=False,
     ):
-        assert action_parameterization in ("euclidean", "normed_euclidean", "von_mises")
-
         super().__init__()
-        self.action_parameterization = action_parameterization
-        self.dispersion_scale = dispersion_scale
+        self.norm_action_mean = norm_action_mean
 
         self.policy_encoder = Encoder(num_layers, d_model, nhead)
         self.value_encoder = Encoder(num_layers, d_model, nhead)
 
-        if self.action_parameterization.endswith("euclidean"):
-            self.move_head = nn.Linear(d_model, 4)
-            self.throw_head = nn.Linear(d_model, 4)
-        else:
-            self.move_head = nn.Linear(d_model, 2)
-            self.throw_head = nn.Linear(d_model, 2)
+        self.move_head = nn.Linear(d_model, 4)
+        self.throw_head = nn.Linear(d_model, 4)
         self.value_head = nn.Linear(d_model, 1)
         self.aux_value_head = nn.Linear(d_model, 1)
 
@@ -141,32 +133,18 @@ class Agents(nn.Module):
                     actions["id"][i] = 0
                     logits = self.move_head(embed)
 
-                if self.action_parameterization.endswith("euclidean"):
-                    mu = logits[:2]
-                    if self.action_parameterization == "normed_euclidean":
-                        mu = mu / torch.norm(mu)
-                    sigma = F.softplus(
-                        logits[2:] * self.dispersion_scale
-                        + self._std_offset.to(device=logits.device)
-                    )
-                    distr = distributions.Normal(mu, sigma, validate_args=False)
-                else:
-                    assert self.action_parameterization == "von_mises"
-                    loc = logits[0]
-                    concentration = F.softplus(logits[1] / self.dispersion_scale)
-                    # TODO set validate_args = False
-                    distr = distributions.VonMises(loc, concentration)
+                mu = logits[:2]
+                if self.norm_action_mean == "normed_euclidean":
+                    mu = mu / torch.norm(mu)
+                sigma = F.softplus(
+                    logits[2:] + self._std_offset.to(device=logits.device)
+                )
+                distr = distributions.Normal(mu, sigma, validate_args=False)
 
                 action = distr.sample()
                 logp = distr.log_prob(action)
 
-                if self.action_parameterization == "von_mises":
-                    actions["target"][i] = (
-                        torch.cos(action).item(),
-                        torch.sin(action).item(),
-                    )
-                else:
-                    actions["target"][i] = action.cpu().numpy()
+                actions["target"][i] = action.cpu().numpy()
                 logps[i] = logp.sum().item()
 
         return actions, logps
@@ -189,35 +167,23 @@ class Agents(nn.Module):
         ret = torch.zeros((batch_idx.shape[0], 2))
         for i in range(2):
             embed = z[i + 1]
-            if self.action_parameterization.endswith("euclidean"):
-                logits = torch.zeros((len(batch_idx), 4))
-            else:
-                logits = torch.zeros((len(batch_idx), 2))
+            logits = torch.zeros((len(batch_idx), 4))
 
             throw_turns = rollout["obs"][f"wizard{i}"][batch_idx, 5] == 1
             logits[throw_turns] = self.throw_head(embed[throw_turns])
             logits[~throw_turns] = self.move_head(embed[~throw_turns])
 
             actions_taken = rollout["act"]["target"][batch_idx, i]
-            if self.action_parameterization.endswith("euclidean"):
-                mu = logits[:, :2]
-                if self.action_parameterization == "normed_euclidean":
-                    mu = mu / torch.norm(mu, dim=1, keepdim=True)
-                sigma = F.softplus(
-                    logits[:, 2:] * self.dispersion_scale
-                    + self._std_offset.to(device=logits.device)
-                )
-                distrs.append(distributions.Normal(mu, sigma, validate_args=False))
 
-                ret[:, i] = distrs[i].log_prob(actions_taken).sum(dim=1)
-            else:
-                loc = logits[:, 0]
-                concentration = F.softplus(logits[:, 1] / self.dispersion_scale)
-                # TODO set validate_args = False
-                distrs.append(distributions.VonMises(loc, concentration))
+            mu = logits[:, :2]
+            if self.norm_action_mean:
+                mu = mu / torch.norm(mu, dim=1, keepdim=True)
+            sigma = F.softplus(
+                logits[:, 2:] + self._std_offset.to(device=logits.device)
+            )
+            distrs.append(distributions.Normal(mu, sigma, validate_args=False))
 
-                angles = torch.atan2(actions_taken[:, 1], actions_taken[:, 0])
-                ret[:, i] = distrs[i].log_prob(angles)
+            ret[:, i] = distrs[i].log_prob(actions_taken).sum(dim=1)
 
         return ret, distrs
 
@@ -228,6 +194,3 @@ class Agents(nn.Module):
             embed = z[i + 1]  # B x 32
             ret[:, i] = self.value_head(embed).squeeze(1)  # B x 1  ->  B
         return ret
-
-    def aux_value_forward(self, rollout, batch_idx):
-        pass

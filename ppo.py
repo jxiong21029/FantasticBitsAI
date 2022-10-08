@@ -1,9 +1,10 @@
 import numpy as np
 import torch
 
-from agents import Agents
+from architectures import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
-from utils import Logger, RunningMoments, discount_cumsum, grad_norm
+from trainer import Trainer
+from utils import RunningMoments, discount_cumsum, grad_norm
 
 
 # adapted from SpinningUp PPO
@@ -131,7 +132,7 @@ class Buffer:
         }
 
 
-class Trainer:
+class PPOTrainer(Trainer):
     def __init__(
         self,
         agents,
@@ -149,10 +150,8 @@ class Trainer:
         entropy_reg=1e-5,
         seed=None,
     ):
-        self.rng = np.random.default_rng(seed=seed)
-        self.logger = Logger()
-
-        self.agents = agents
+        super().__init__(env_kwargs=env_kwargs, seed=seed)
+        self._agents = agents
         self.optim = torch.optim.Adam(
             agents.parameters(), lr=lr, weight_decay=weight_decay
         )
@@ -172,6 +171,10 @@ class Trainer:
         self.env_fn = env_fn
         self.env_kwargs = env_kwargs
         self.env_obs = self.env.reset()
+
+    @property
+    def agents(self):
+        return self._agents
 
     def collect_rollout(self):
         curr_ep_reward = 0
@@ -285,39 +288,9 @@ class Trainer:
 
         self.logger.step()
 
-    def evaluate(self, num_episodes=50):
-        temp_logger = Logger()
-        eval_env = self.env_fn(**self.env_kwargs, logger=temp_logger)
-        for _ in range(num_episodes):
-            obs = eval_env.reset()
-            done = False
-            while not done:
-                with torch.no_grad():
-                    actions, _ = self.agents.step(obs)
-                obs, _, done = eval_env.step(actions)
-        temp_logger.step()
-        self.logger.cumulative_data.update(
-            {"eval_" + k: v for k, v in temp_logger.cumulative_data.items()}
-        )
-
-    def evaluate_with_render(self):
-        import time
-
-        done = False
-        eval_env = self.env_fn(**self.env_kwargs, render=True, logger=self.logger)
-        obs = eval_env.reset()
-        tot_rew = np.zeros(2)
-        while not done:
-            with torch.no_grad():
-                actions, _ = self.agents.step(obs)
-            obs, rew, done = eval_env.step(actions)
-            tot_rew += rew
-            time.sleep(0.1)
-        print(f"total reward: {tot_rew.tolist()}")
-
 
 def main():
-    trainer = Trainer(
+    trainer = PPOTrainer(
         Agents(),
         FantasticBits,
         rollout_steps=4096,
