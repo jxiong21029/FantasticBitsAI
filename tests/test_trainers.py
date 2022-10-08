@@ -11,8 +11,6 @@ def test_step():
 
 
 def test_short_train():
-    trainer = PPOTrainer(
-        Agents(), FantasticBits, rollout_steps=128, epochs=2, seed=2**15 - 1
-    )
+    trainer = PPOTrainer(Agents(), rollout_steps=128, epochs=2, seed=2**15 - 1)
     trainer.train()
     trainer.evaluate(num_episodes=2)

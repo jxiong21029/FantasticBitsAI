@@ -19,20 +19,32 @@ MARGIN = 25
 class FantasticBits:
     def __init__(
         self,
+        *,
         bludgers_enabled=True,
         opponents_enabled=True,
-        shape_snaffle_dist=False,
+        reward_own_goal=1.0,
+        reward_teammate_goal=1.0,
+        reward_opponent_goal=0.0,
+        reward_shaping_snaffle_goal_dist=False,
+        reward_win=0.0,
+        reward_loss=0.0,
         render=False,
         seed=None,
         logger=None,
     ):
         self.rng = np.random.default_rng(seed=seed)
         self.logger = logger
+        self.render = render
 
         self.bludgers_enabled = bludgers_enabled
         self.opponents_enabled = opponents_enabled
-        self.shape_snaffle_dist = shape_snaffle_dist
-        self.render = render
+
+        self.reward_shaping_snaffle_goal_dist = reward_shaping_snaffle_goal_dist
+        self.reward_own_goal = reward_own_goal
+        self.reward_teammate_goal = reward_teammate_goal
+        self.reward_opponent_goal = reward_opponent_goal
+        self.reward_win = reward_win
+        self.reward_loss = reward_loss
 
         self.t = 0
         self.score = [0, 0]
@@ -181,8 +193,7 @@ class FantasticBits:
 
         new_total_dist = sum(s.distance(Point(16000, 3750)) for s in self.snaffles)
 
-        # NOTE: hardcoded discount factor
-        if self.shape_snaffle_dist:
+        if self.reward_shaping_snaffle_goal_dist:
             rewards[0] += (total_snaffle_dist - new_total_dist) / 10000
             rewards[1] += (total_snaffle_dist - new_total_dist) / 10000
 
@@ -192,12 +203,20 @@ class FantasticBits:
             if team == 1:
                 for i, wizard in enumerate(self.agents):
                     if snaffle.last_touched == wizard:
-                        rewards[i] += 3
+                        rewards[i] += self.reward_own_goal
                     else:
-                        rewards[i] += 1
+                        rewards[i] += self.reward_teammate_goal
+            else:
+                rewards += self.reward_opponent_goal  # expected to be nonpositive
 
         self.t += 1
         done = len(self.snaffles) == 0 or self.t == 200
+
+        if done:
+            if self.score[0] > self.score[1]:
+                rewards += self.reward_win
+            else:
+                rewards += self.reward_loss
 
         if done and self.logger is not None:
             self.logger.log(

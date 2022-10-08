@@ -136,7 +136,6 @@ class PPOTrainer(Trainer):
     def __init__(
         self,
         agents,
-        env_fn,
         env_kwargs=None,
         lr=1e-3,
         weight_decay=1e-4,
@@ -167,8 +166,7 @@ class PPOTrainer(Trainer):
 
         if env_kwargs is None:
             env_kwargs = {}
-        self.env = env_fn(**env_kwargs, logger=self.logger)
-        self.env_fn = env_fn
+        self.env = FantasticBits(**env_kwargs, logger=self.logger)
         self.env_kwargs = env_kwargs
         self.env_obs = self.env.reset()
 
@@ -292,14 +290,13 @@ class PPOTrainer(Trainer):
 def main():
     trainer = PPOTrainer(
         Agents(),
-        FantasticBits,
         rollout_steps=4096,
         lr=1e-4,
         epochs=3,
         env_kwargs={
             "bludgers_enabled": False,
             "opponents_enabled": False,
-            "shape_snaffle_dist": True,
+            "reward_snaffle_dist": True,
         },
     )
     for _ in range(100):

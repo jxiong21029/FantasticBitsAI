@@ -10,7 +10,7 @@ from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD
 
 
 class Encoder(nn.Module):
-    def __init__(self, num_layers, d_model, nhead):
+    def __init__(self, num_layers, d_model, nhead, dim_feedforward):
         super().__init__()
 
         self.d_model = d_model
@@ -24,7 +24,7 @@ class Encoder(nn.Module):
 
         self.encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model, nhead=nhead, dim_feedforward=64, dropout=0
+                d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=0
             ),
             num_layers=num_layers,
             norm=norm,
@@ -95,13 +95,14 @@ class Agents(nn.Module):
         num_layers=1,
         d_model=32,
         nhead=2,
+        dim_feedforward=64,
         norm_action_mean=False,
     ):
         super().__init__()
         self.norm_action_mean = norm_action_mean
 
-        self.policy_encoder = Encoder(num_layers, d_model, nhead)
-        self.value_encoder = Encoder(num_layers, d_model, nhead)
+        self.policy_encoder = Encoder(num_layers, d_model, nhead, dim_feedforward)
+        self.value_encoder = Encoder(num_layers, d_model, nhead, dim_feedforward)
 
         self.move_head = nn.Linear(d_model, 4)
         self.throw_head = nn.Linear(d_model, 4)

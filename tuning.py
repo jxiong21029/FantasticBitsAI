@@ -9,7 +9,6 @@ from ray import air, tune
 from ray.tune.search import Searcher
 
 from architectures import Agents
-from env import FantasticBits
 from ppo import PPOTrainer
 
 
@@ -383,7 +382,6 @@ def train(config):
     for run in range(3):
         trainer = PPOTrainer(
             Agents(),
-            FantasticBits,
             lr=config["lr"],
             weight_decay=config["weight_decay"],
             gamma=config["gamma"],
@@ -395,7 +393,7 @@ def train(config):
             env_kwargs={
                 "bludgers_enabled": False,
                 "opponents_enabled": False,
-                "shape_snaffle_dist": True,
+                "reward_snaffle_dist": True,
             },
         )
 
