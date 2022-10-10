@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.distributions as distributions
 
 from architectures import Agents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
@@ -235,24 +236,32 @@ class PPOTrainer(Trainer):
                 total_entropy = 0
                 if self.entropy_reg > 0:
                     for d in distrs:
-                        mean_sq_norm = d.mean[:, 0] ** 2 + d.mean[:, 1] ** 2
-                        scaled_entropy = (
-                            torch.sum(
-                                torch.log(
-                                    2
-                                    * torch.pi
-                                    * (d.variance / mean_sq_norm.reshape(-1, 1))
+                        if isinstance(d, distributions.Normal):
+                            mean_sq_norm = d.mean[:, 0] ** 2 + d.mean[:, 1] ** 2
+                            scaled_entropy = (
+                                torch.sum(
+                                    torch.log(
+                                        2
+                                        * torch.pi
+                                        * (d.variance / mean_sq_norm.reshape(-1, 1))
+                                    )
                                 )
+                                / batch_idx.shape[0]
+                                / 2
                             )
-                            / batch_idx.shape[0]
-                            / 2
-                        )
-                        total_loss += -self.entropy_reg * scaled_entropy
-                        total_entropy += scaled_entropy.item() + 0.5
+                            total_loss += -self.entropy_reg * scaled_entropy
+                            total_entropy += scaled_entropy.item() + 0.5
+                        else:
+                            assert isinstance(d, distributions.VonMises)
+
+                            total_loss += -self.entropy_reg * d.entropy()
+
+                total_loss = self.custom_loss(total_loss, rollout)
 
                 self.logger.log(
                     loss_pi=loss_pi.item(),
                     loss_v=loss_v.item(),
+                    loss_tot=total_loss.item(),
                     ppo_clip_ratio=torch.gt(torch.abs(ratio - 1), self.ppo_clip_coeff)
                     .float()
                     .mean()

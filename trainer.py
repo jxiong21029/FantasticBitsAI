@@ -22,6 +22,9 @@ class Trainer(ABC):
     def train(self):
         pass
 
+    def custom_loss(self, loss, rollout):
+        return loss
+
     def evaluate(self, num_episodes=50):
         self.agents.eval()
 

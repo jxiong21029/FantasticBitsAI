@@ -14,7 +14,7 @@ The three approaches were compared using evaluation performance after behavioral
 cloning as a proxy objective.
 
 It was found that the Von Mises distribution has numerical stability issues with small
-concentrations (less than 10^-3.5). However, if this issue is address (either with
+concentrations (less than 10^-3.5). However, if this issue is addressed (either with
 clipping or by adding a small constant e.g. 1e-3 to the concentration), then von Mises
 and Euclidean seem to have similar performance, while normalized Euclidean lags behind.
 

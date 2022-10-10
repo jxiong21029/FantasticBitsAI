@@ -5,19 +5,32 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from architectures import Encoder
+from von_mises_upgrades import upgrade
+
+upgrade()
 
 
 class VonMisesAgents(nn.Module):
-    def __init__(self, num_layers=1, d_model=32, nhead=2):
+    def __init__(self, num_layers=1, d_model=32, nhead=2, dim_feedforward=64):
         super().__init__()
 
-        self.policy_encoder = Encoder(num_layers, d_model, nhead)
-        self.value_encoder = Encoder(num_layers, d_model, nhead)
+        self.policy_encoder = Encoder(
+            num_layers=num_layers,
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+        )
+        self.value_encoder = Encoder(
+            num_layers=num_layers,
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+        )
 
         self.move_head = nn.Linear(d_model, 3)
         self.throw_head = nn.Linear(d_model, 3)
         self.value_head = nn.Linear(d_model, 1)
-        self.aux_value_head = nn.Linear(d_model, 1)
+        # self.aux_value_head = nn.Linear(d_model, 1)
 
         with torch.no_grad():
             self.move_head.weight *= 0.01
