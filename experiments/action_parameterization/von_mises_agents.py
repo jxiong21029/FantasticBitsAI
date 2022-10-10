@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from architectures import Encoder
-from von_mises_upgrades import upgrade
+from experiments.action_parameterization.von_mises_upgrades import upgrade
 
 upgrade()
 

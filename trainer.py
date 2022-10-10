@@ -22,9 +22,6 @@ class Trainer(ABC):
     def train(self):
         pass
 
-    def custom_loss(self, loss, rollout):
-        return loss
-
     def evaluate(self, num_episodes=50):
         self.agents.eval()
 
@@ -38,9 +35,9 @@ class Trainer(ABC):
                     actions, _ = self.agents.step(obs)
                 obs, _, done = eval_env.step(actions)
         temp_logger.step()
-        self.logger.cumulative_data.update(
-            {"eval_" + k: v for k, v in temp_logger.cumulative_data.items()}
-        )
+
+        for k, v in temp_logger.cumulative_data.items():
+            self.logger.cumulative_data["eval_" + k].extend(v)
 
         self.agents.train()
 

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import scipy.signal
 import torch
+from ray import tune
 
 
 # adapted from SpinningUp PPO
@@ -60,26 +61,23 @@ class Logger:
             self.epoch_data[k].append(v)
 
     def step(self):
-        seen = {k: False for k in self.cumulative_data.keys()}
         for k, v in self.epoch_data.items():
             if len(v) == 1:
                 self.cumulative_data[k].append(v[0])
-                seen[k] = True
             elif isinstance(v[0], bool):
                 self.cumulative_data[k + "_prop"].append(np.mean(v, dtype=np.float32))
-                seen[k + "_prop"] = True
             else:
                 self.cumulative_data[k + "_mean"].append(np.mean(v))
-                seen[k + "_mean"] = True
                 self.cumulative_data[k + "_std"].append(np.std(v))
-                seen[k + "_std"] = True
-
-        maxlen = max(len(v) for v in self.cumulative_data.values())
-        for k, v in self.cumulative_data.items():
-            if len(v) < maxlen:
-                self.cumulative_data[k].append(np.nan)
 
         self.epoch_data.clear()
+
+    def update_from(self, other: "Logger"):
+        for k, v in other.cumulative_data.items():
+            self.cumulative_data[k].extend(v)
+
+    def tune_report(self):
+        tune.report(**{k: v[-1] for k, v in self.cumulative_data.items()})
 
     def to_df(self):
         return pd.DataFrame(self.cumulative_data)
@@ -94,13 +92,14 @@ class Logger:
                 elif os.path.isdir(file_path):
                     shutil.rmtree(file_path)
             self.cleared_previous = True
-        x = np.arange(len(self.cumulative_data[list(self.cumulative_data.keys())[0]]))
 
         for k, v in self.cumulative_data.items():
             if k.endswith("_std"):
                 continue
 
             fig, ax = plt.subplots()
+
+            x = np.arange(len(self.cumulative_data[k]))
             v = np.array(v)
             if k.endswith("_mean"):
                 name = k[:-5]

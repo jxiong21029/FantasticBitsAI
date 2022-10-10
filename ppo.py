@@ -171,6 +171,8 @@ class PPOTrainer(Trainer):
         self.env_kwargs = env_kwargs
         self.env_obs = self.env.reset()
 
+        self.rollout = None
+
     @property
     def agents(self):
         return self._agents
@@ -199,10 +201,63 @@ class PPOTrainer(Trainer):
                 self.logger.log(rollout_ep_reward=curr_ep_reward)
                 curr_ep_reward = 0
 
-        return self.buf.get()
+        self.rollout = self.buf.get()
+
+    def ppo_loss(self, rollout, batch_idx):
+        logp_old = rollout["logp"][batch_idx]
+        logp, distrs = self.agents.policy_forward(rollout, batch_idx)
+        ratio = torch.exp(logp - logp_old)
+
+        adv = rollout["adv"][batch_idx]
+        norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+        clip_adv = (
+            torch.clamp(ratio, 1 - self.ppo_clip_coeff, 1 + self.ppo_clip_coeff)
+            * norm_adv
+        )
+        loss_pi = -(torch.min(ratio * norm_adv, clip_adv)).mean()
+
+        v_pred = self.agents.value_forward(rollout, batch_idx)
+        loss_v = ((v_pred - rollout["ret"][batch_idx]) ** 2).mean()
+
+        total_loss = loss_pi + loss_v
+
+        total_entropy = 0
+        if self.entropy_reg > 0:
+            for d in distrs:
+                if isinstance(d, distributions.Normal):
+                    mean_sq_norm = d.mean[:, 0] ** 2 + d.mean[:, 1] ** 2
+                    scaled_entropy = (
+                        torch.sum(
+                            torch.log(
+                                2
+                                * torch.pi
+                                * (d.variance / mean_sq_norm.reshape(-1, 1))
+                            )
+                        )
+                        / batch_idx.shape[0]
+                        / 2
+                    )
+                    total_loss += -self.entropy_reg * scaled_entropy
+                    total_entropy += scaled_entropy.item() + 0.5
+                else:
+                    assert isinstance(d, distributions.VonMises)
+
+                    total_loss += (-self.entropy_reg * d.entropy()).mean()
+
+        self.logger.log(
+            loss_pi=loss_pi.item(),
+            loss_v=loss_v.item(),
+            loss_tot=total_loss.item(),
+            ppo_clip_ratio=torch.gt(torch.abs(ratio - 1), self.ppo_clip_coeff)
+            .float()
+            .mean()
+            .item(),
+            scaled_entropy=total_entropy,
+        )
+        return total_loss
 
     def train(self):
-        rollout = self.collect_rollout()
+        self.collect_rollout()
 
         idx = np.arange(self.buf.max_size)
 
@@ -216,58 +271,7 @@ class PPOTrainer(Trainer):
             for i in range(idx.shape[0] // self.minibatch_size):
                 batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
 
-                logp_old = rollout["logp"][batch_idx]
-                logp, distrs = self.agents.policy_forward(rollout, batch_idx)
-                ratio = torch.exp(logp - logp_old)
-
-                adv = rollout["adv"][batch_idx]
-                norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-                clip_adv = (
-                    torch.clamp(ratio, 1 - self.ppo_clip_coeff, 1 + self.ppo_clip_coeff)
-                    * norm_adv
-                )
-                loss_pi = -(torch.min(ratio * norm_adv, clip_adv)).mean()
-
-                v_pred = self.agents.value_forward(rollout, batch_idx)
-                loss_v = ((v_pred - rollout["ret"][batch_idx]) ** 2).mean()
-
-                total_loss = loss_pi + loss_v
-
-                total_entropy = 0
-                if self.entropy_reg > 0:
-                    for d in distrs:
-                        if isinstance(d, distributions.Normal):
-                            mean_sq_norm = d.mean[:, 0] ** 2 + d.mean[:, 1] ** 2
-                            scaled_entropy = (
-                                torch.sum(
-                                    torch.log(
-                                        2
-                                        * torch.pi
-                                        * (d.variance / mean_sq_norm.reshape(-1, 1))
-                                    )
-                                )
-                                / batch_idx.shape[0]
-                                / 2
-                            )
-                            total_loss += -self.entropy_reg * scaled_entropy
-                            total_entropy += scaled_entropy.item() + 0.5
-                        else:
-                            assert isinstance(d, distributions.VonMises)
-
-                            total_loss += -self.entropy_reg * d.entropy()
-
-                total_loss = self.custom_loss(total_loss, rollout)
-
-                self.logger.log(
-                    loss_pi=loss_pi.item(),
-                    loss_v=loss_v.item(),
-                    loss_tot=total_loss.item(),
-                    ppo_clip_ratio=torch.gt(torch.abs(ratio - 1), self.ppo_clip_coeff)
-                    .float()
-                    .mean()
-                    .item(),
-                    scaled_entropy=total_entropy,
-                )
+                total_loss = self.ppo_loss(self.rollout, batch_idx)
 
                 self.optim.zero_grad(set_to_none=True)
                 total_loss.backward()
