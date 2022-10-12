@@ -73,12 +73,12 @@ class Entity(Point):
                 break
 
         endx = self.x + self.vx
-        endy = self.y + self.vy
         if endx < self.rad:
             yield Collision(self, Boundary.LEFT, (self.rad - self.x) / self.vx)
         elif endx > 16000 - self.rad:
             yield Collision(self, Boundary.RIGHT, (16000 - self.rad - self.x) / self.vx)
 
+        endy = self.y + self.vy
         if endy < self.rad:
             yield Collision(self, Boundary.TOP, (self.rad - self.y) / self.vy)
         elif endy > 7500 - self.rad:
@@ -191,6 +191,14 @@ class Entity(Point):
             other.vx += fx / m2
             other.vy += fy / m2
 
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"pos=({self.x}, {self.y}), "
+            f"vel=({self.vx}, {self.vy})"
+            f")"
+        )
+
 
 class Wizard(Entity):
     def __init__(self, x, y, vx=0, vy=0, rad=400, mass=1, friction=0.75, grab_cd=0):
@@ -256,28 +264,47 @@ class Snaffle(Entity):
         self.vy += dy * power / self.mass
 
     def map_collisions(self):
-        endx = self.x + self.vx
-        endy = self.y + self.vy
         for pole in POLES:
             if col := self.collision(pole):
                 yield col
-                break
-        else:
-            if endx < 0 and (1500 <= endy <= 6000):
-                yield Collision(self, Boundary.GOAL, self.x / self.vx)
-                return
-            elif endx > 16000 and (1500 <= endy <= 6000):
-                yield Collision(self, Boundary.GOAL, (16000 - self.x) / self.vx)
-                return
 
-        if endx < self.rad and not (1500 <= endy <= 6000):
-            yield Collision(self, Boundary.LEFT, (self.rad - self.x) / self.vx)
-        elif endx > 16000 - self.rad and not (1500 <= endy <= 6000):
-            yield Collision(self, Boundary.RIGHT, (16000 - self.rad - self.x) / self.vx)
+        endx = self.x + self.vx
+        if (
+            endx < 0
+            and self.vx < 0
+            and 1750 < self.y + self.vy * (t := -self.x / self.vx) < 5750
+        ):
+            yield Collision(self, Boundary.GOAL, t)
+        elif (
+            endx > 16000
+            and self.vx > 0
+            and 1750 < self.y + self.vy * (t := (16000 - self.x) / self.vx) < 5750
+        ):
+            yield Collision(self, Boundary.GOAL, t)
 
-        if endy < self.rad:
+        endy = self.y + self.vy
+        if (
+            endx < self.rad <= self.x
+            and self.vx < 0
+            and not (
+                1750 < self.y + self.vy * (t := (self.rad - self.x) / self.vx) < 5750
+            )
+        ):
+            yield Collision(self, Boundary.LEFT, t)
+        elif (
+            self.x <= 16000 - self.rad < endx
+            and self.vx > 0
+            and not (
+                1750
+                < self.y + self.vy * (t := (16000 - self.rad - self.x) / self.vx)
+                < 5750
+            )
+        ):
+            yield Collision(self, Boundary.RIGHT, t)
+
+        if self.vy < 0 and endy < self.rad:
             yield Collision(self, Boundary.TOP, (self.rad - self.y) / self.vy)
-        elif endy > 7500 - self.rad:
+        elif self.vy > 0 and endy > 7500 - self.rad:
             yield Collision(self, Boundary.BOTTOM, (7500 - self.rad - self.y) / self.vy)
 
     def collision(self, other):
