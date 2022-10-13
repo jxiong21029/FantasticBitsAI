@@ -5,17 +5,18 @@ import torch
 
 from env import FantasticBits
 
-# from architectures import Agents
-from experiments.action_parameterization.von_mises_agents import VonMisesAgents
+# from architectures import VonMisesAgents
+from experiments.distillation.repr_distill import RepresentationDistillationAgents
 
-path = "experiments/action_parameterization/checkpoints/von_mises_0.ckpt"
+path = "experiments/ray_results/repr_distill_backup/train_41faa86e_28_epochs=2,lr=0.0010,minibatch_size=1024,weight_decay=0.0000_2022-10-13_08-12-07/{'lr': 0.001, 'minibatch_size': 1024, 'epochs': 2, 'weight_decay': 1e-05}_1.ckpt"
 
-agents = VonMisesAgents(num_layers=2, d_model=64)
+# agents = VonMisesAgents(num_layers=2, d_model=64, dim_feedforward=128)
+agents = RepresentationDistillationAgents(num_layers=2, d_model=64, dim_feedforward=128)
 agents.load_state_dict(torch.load(path))
 agents.eval()
 
 done = False
-eval_env = FantasticBits(render=True)
+eval_env = FantasticBits(render=True, opponents_enabled=False, bludgers_enabled=False)
 obs = eval_env.reset()
 tot_rew = np.zeros(2)
 while not done:

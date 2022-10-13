@@ -8,7 +8,7 @@ import torch
 from ray import air, tune
 from ray.tune.search import Searcher
 
-from architectures import Agents
+from architectures import GaussianAgents
 from ppo import PPOTrainer
 
 
@@ -381,7 +381,7 @@ def train(config):
     results = []
     for run in range(3):
         trainer = PPOTrainer(
-            Agents(),
+            GaussianAgents(),
             lr=config["lr"],
             weight_decay=config["weight_decay"],
             gamma=config["gamma"],

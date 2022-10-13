@@ -7,9 +7,9 @@ import torch.distributions as distributions
 import torch.nn as nn
 import torch.nn.functional as F
 
-from experiments.action_parameterization.von_mises_agents import VonMisesAgents
+from architectures import VonMisesAgents
 from ppo import PPOTrainer
-from utils import Logger, grad_norm
+from utils import Logger, component_grad_norms
 
 
 class RepresentationDistillationAgents(VonMisesAgents):
@@ -28,6 +28,10 @@ class RepresentationDistillationAgents(VonMisesAgents):
         )
         self.move_head_2 = nn.Linear(d_model, 3)
         self.throw_head_2 = nn.Linear(d_model, 3)
+
+        with torch.no_grad():
+            self.move_head_2.weight *= 0.01
+            self.throw_head_2.weight *= 0.01
 
     def policy_forward_2(self, rollout, batch_idx):
         z = self.policy_encoder(rollout["obs"], batch_idx)  # S x B x 32
@@ -105,19 +109,25 @@ class RepresentationDistillationTrainer(PPOTrainer):
         self.rng.shuffle(self.demo_idx)
         self.ptr = 0
 
-        self.phase2_logger = Logger()
         self.phase2_optim = torch.optim.Adam(
             self.agents.parameters(), lr=lr, weight_decay=weight_decay
         )
 
     def train(self):
         super().train()
+        phase2_logger = Logger()
 
         frozen_agents = copy.deepcopy(self.agents)
 
         idx = np.arange(self.buf.max_size)
         self.rng.shuffle(idx)
 
+        # TODO: things to check for
+        #   tensor shapes
+        #   gradient flow (both BC and KL)
+        #   KL makes policy closer
+        #   attributes reasonable (ptr, demo_idx)
+        #   optim targets
         for i in range(idx.shape[0] // self.minibatch_size):
             batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
 
@@ -141,21 +151,24 @@ class RepresentationDistillationTrainer(PPOTrainer):
 
             total_loss = bc_loss + self.beta_kl * kl_loss
 
-            self.phase2_optim.zero_grad()
+            self.phase2_optim.zero_grad(set_to_none=True)
+
             total_loss.backward()
-            with torch.no_grad():
-                norm = grad_norm(self.agents)
+            norms = component_grad_norms(
+                self.agents, exclude=("value_encoder", "value_head")
+            )
+
             self.phase2_optim.step()
 
-            self.phase2_logger.log(
+            phase2_logger.log(
                 kl_loss=kl_loss.item(),
                 bc_loss=bc_loss.item(),
                 total_distill_loss=total_loss.item(),
-                distill_grad_norm=norm,
+                **{"distill_grad_norm_" + k: v for k, v in norms.items()},
             )
 
-        self.phase2_logger.step()
-        self.logger.update_from(self.phase2_logger)
+        phase2_logger.step()
+        self.logger.update_from(phase2_logger)
 
 
 def main():
@@ -169,17 +182,20 @@ def main():
             dim_feedforward=128,
         ),
         demo_filename="../../data/basic_demo.pickle",
-        lr=10**-3.5,
-        weight_decay=10**-4.5,
+        lr=10**-3,
+        minibatch_size=256,
+        weight_decay=10**-3.5,
         epochs=2,
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
             "reward_own_goal": 3.0,
         },
     )
-    for _ in tqdm.trange(20):
+    for i in tqdm.trange(201):
         trainer.train()
-    trainer.evaluate_with_render()
+        if i % 20 == 0:
+            trainer.evaluate()
+            trainer.logger.generate_plots()
 
 
 if __name__ == "__main__":

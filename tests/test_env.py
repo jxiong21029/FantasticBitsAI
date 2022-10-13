@@ -88,3 +88,17 @@ def test_weird_goal_angle_collisions(null_action):
                 break
             assert 0 <= env.snaffles[0].x <= 16000
             assert 0 <= env.snaffles[0].y <= 7500
+
+
+def test_dist_reward(null_action):
+    env = FantasticBits(reward_shaping_snaffle_goal_dist=True)
+    env.reset()
+
+    env.snaffles = [snaffle := env.snaffles[0]]
+    snaffle.x = 2000
+    snaffle.vx = 500
+    snaffle.y = 3750
+    env.bludgers.clear()
+
+    _, rewards, _ = env.step(null_action)
+    assert rewards[0] == rewards[1] == 0.036

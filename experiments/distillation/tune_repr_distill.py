@@ -1,11 +1,16 @@
 import torch
-from distill_modeling import (
+from ray import air, tune
+from repr_distill import (
     RepresentationDistillationAgents,
     RepresentationDistillationTrainer,
 )
-from ray import air, tune
 
-from tuning import IndependentGroupsSearch, log_halving_search, q_log_halving_search
+from tuning import (
+    IndependentGroupsSearch,
+    grid_search,
+    log_halving_search,
+    q_log_halving_search,
+)
 
 
 def train(config):
@@ -22,24 +27,23 @@ def train(config):
             lr=config["lr"],
             minibatch_size=config["minibatch_size"],
             weight_decay=config["weight_decay"],
-            epochs=3,
+            epochs=config["epochs"],
             env_kwargs={
                 "reward_shaping_snaffle_goal_dist": True,
                 "reward_own_goal": 3.0,
+                "reward_teammate_goal": 0.0,
             },
         )
-        for i in range(101):
+        for i in range(201):
             trainer.train()
             if i % 20 == 0:
                 trainer.evaluate()
                 trainer.logger.tune_report()
-                results.append(
-                    {k: v[-1] for k, v in trainer.logger.cumulative_data.items()}
-                )
 
+        results.append({k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
         torch.save(
             trainer.agents.state_dict(),
-            f"checkpoints/{config}_{run}.ckpt",
+            f"{config}_{run}.ckpt",
         )
 
     tune.report(
@@ -58,16 +62,23 @@ def main():
     search_alg = IndependentGroupsSearch(
         search_space={
             "lr": log_halving_search(1e-4, 1e-3, 1e-2),
-            "minibatch_size": q_log_halving_search(32, 128, 512),
+            "minibatch_size": q_log_halving_search(256, 512, 1024),
+            "epochs": grid_search(1, 2, 3),
             "weight_decay": log_halving_search(1e-5, 1e-4, 1e-3),
         },
         depth=1,
         defaults={
-            "lr": 1e-4,
-            "minibatch_size": 128,
-            "weight_decay": 1e-5,
+            "lr": 1e-3,
+            "minibatch_size": 256,
+            "epochs": 2,
+            "weight_decay": 1e-4,
         },
-        groups=(("lr", "minibatch_size"), ("weight_decay",)),
+        groups=(
+            ("lr", "minibatch_size"),
+            ("weight_decay",),
+            ("epochs",),
+        ),
+        repeat=2,
         metric="mo3_eval_goals_scored_mean",
         mode="max",
     )

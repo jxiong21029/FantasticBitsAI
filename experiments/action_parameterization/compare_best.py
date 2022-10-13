@@ -1,9 +1,8 @@
 import numpy as np
 import torch
 import tqdm
-from von_mises_agents import VonMisesAgents
 
-from architectures import Agents
+from architectures import GaussianAgents, VonMisesAgents
 from behavioral_cloning import BCTrainer
 
 
@@ -12,7 +11,7 @@ def train(config):
     for run in range(5):
         if config["action_parameterization"].endswith("normed_euclidean"):
             trainer = BCTrainer(
-                Agents(
+                GaussianAgents(
                     num_layers=2,
                     d_model=64,
                     nhead=2,

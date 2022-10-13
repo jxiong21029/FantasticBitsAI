@@ -6,7 +6,7 @@ import tqdm
 
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
 from trainer import Trainer
-from utils import Logger, grad_norm
+from utils import Logger, component_grad_norms
 
 
 def stack_obs(dicts):
@@ -128,7 +128,7 @@ class BCTrainer(Trainer):
 
         for i in range(idx.shape[0] // self.minibatch_size):
             batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
-            logp, distrs = self.agents.policy_forward(self.rollout, batch_idx)
+            logp, _ = self.agents.policy_forward(self.rollout, batch_idx)
 
             loss = -logp.mean()
             self.optim.zero_grad(set_to_none=True)
@@ -136,14 +136,16 @@ class BCTrainer(Trainer):
 
             self.logger.log(loss=loss.item())
 
-            norm = grad_norm(self.agents)
-            self.logger.log(grad_norm=norm)
+            norms = component_grad_norms(
+                self.agents, exclude=("value_encoder", "value_head")
+            )
+            self.logger.log(**{"grad_norm_" + k: v for k, v in norms.items()})
             if self.grad_clipping is not None:
                 torch.nn.utils.clip_grad_norm_(
                     self.agents.parameters(), self.grad_clipping
                 )
                 self.logger.log(
-                    grad_clipped=(norm > self.grad_clipping),
+                    grad_clipped=(norms["total"] > self.grad_clipping),
                 )
 
             self.optim.step()
@@ -152,18 +154,25 @@ class BCTrainer(Trainer):
 
 
 def main():
-    from architectures import Agents
+    from architectures import VonMisesAgents
 
     trainer = BCTrainer(
-        Agents(),
+        VonMisesAgents(num_layers=2, d_model=64, dim_feedforward=128),
         demo_filename="data/basic_demo.pickle",
-        lr=1e-3,
-        minibatch_size=128,
+        lr=10**-2.5,
+        minibatch_size=512,
         weight_decay=1e-5,
         grad_clipping=10.0,
     )
-    trainer.train()
-    trainer.evaluate_with_render()
+    trainer.evaluate()
+    for i in tqdm.trange(100):
+        trainer.train()
+        if i % 20 == 19:
+            trainer.evaluate()
+            trainer.logger.generate_plots(dirname="plotgen_bc/")
+    torch.save(trainer.agents.state_dict(), "bc_agents.pth")
+    for _ in range(5):
+        trainer.evaluate_with_render()
 
 
 if __name__ == "__main__":

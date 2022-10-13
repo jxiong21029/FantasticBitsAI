@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.distributions as distributions
 
-from architectures import Agents
+from architectures import GaussianAgents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
 from trainer import Trainer
 from utils import RunningMoments, discount_cumsum, grad_norm
@@ -167,6 +167,7 @@ class PPOTrainer(Trainer):
 
         if env_kwargs is None:
             env_kwargs = {}
+        env_kwargs["reward_gamma"] = gamma
         self.env = FantasticBits(**env_kwargs, logger=self.logger)
         self.env_kwargs = env_kwargs
         self.env_obs = self.env.reset()
@@ -203,12 +204,11 @@ class PPOTrainer(Trainer):
 
         self.rollout = self.buf.get()
 
-    def ppo_loss(self, rollout, batch_idx):
-        logp_old = rollout["logp"][batch_idx]
-        logp, distrs = self.agents.policy_forward(rollout, batch_idx)
+    def ppo_loss(self, batch_idx, logp, distrs):
+        logp_old = self.rollout["logp"][batch_idx]
         ratio = torch.exp(logp - logp_old)
 
-        adv = rollout["adv"][batch_idx]
+        adv = self.rollout["adv"][batch_idx]
         norm_adv = (adv - adv.mean()) / (adv.std() + 1e-8)
         clip_adv = (
             torch.clamp(ratio, 1 - self.ppo_clip_coeff, 1 + self.ppo_clip_coeff)
@@ -216,8 +216,8 @@ class PPOTrainer(Trainer):
         )
         loss_pi = -(torch.min(ratio * norm_adv, clip_adv)).mean()
 
-        v_pred = self.agents.value_forward(rollout, batch_idx)
-        loss_v = ((v_pred - rollout["ret"][batch_idx]) ** 2).mean()
+        v_pred = self.agents.value_forward(self.rollout, batch_idx)
+        loss_v = ((v_pred - self.rollout["ret"][batch_idx]) ** 2).mean()
 
         total_loss = loss_pi + loss_v
 
@@ -242,7 +242,8 @@ class PPOTrainer(Trainer):
                 else:
                     assert isinstance(d, distributions.VonMises)
 
-                    total_loss += (-self.entropy_reg * d.entropy()).mean()
+                    total_loss += (-self.entropy_reg * (ent := d.entropy())).mean()
+                    total_entropy += ent.mean().item()
 
         self.logger.log(
             loss_pi=loss_pi.item(),
@@ -252,7 +253,7 @@ class PPOTrainer(Trainer):
             .float()
             .mean()
             .item(),
-            scaled_entropy=total_entropy,
+            entropy=total_entropy,
         )
         return total_loss
 
@@ -271,7 +272,8 @@ class PPOTrainer(Trainer):
             for i in range(idx.shape[0] // self.minibatch_size):
                 batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
 
-                total_loss = self.ppo_loss(self.rollout, batch_idx)
+                logp, distrs = self.agents.policy_forward(self.rollout, batch_idx)
+                total_loss = self.ppo_loss(batch_idx, logp, distrs)
 
                 self.optim.zero_grad(set_to_none=True)
                 total_loss.backward()
@@ -302,7 +304,7 @@ class PPOTrainer(Trainer):
 
 def main():
     trainer = PPOTrainer(
-        Agents(),
+        GaussianAgents(),
         rollout_steps=4096,
         lr=1e-4,
         epochs=3,

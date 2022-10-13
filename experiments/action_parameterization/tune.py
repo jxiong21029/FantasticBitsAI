@@ -1,7 +1,6 @@
 from ray import air, tune
-from von_mises_agents import VonMisesAgents
 
-from architectures import Agents
+from architectures import GaussianAgents, VonMisesAgents
 from behavioral_cloning import BCTrainer
 from tuning import IntervalHalvingSearch, log_halving_search
 
@@ -11,7 +10,7 @@ def train(config):
     for _ in range(3):
         if config["action_parameterization"].endswith("normed_euclidean"):
             trainer = BCTrainer(
-                Agents(
+                GaussianAgents(
                     num_layers=config["num_layers"],
                     d_model=config["d_model"],
                     nhead=config["nhead"],

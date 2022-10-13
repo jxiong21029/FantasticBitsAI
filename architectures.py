@@ -5,6 +5,7 @@ import torch
 import torch.distributions as distributions
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import VonMises, register_kl
 
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD
 
@@ -89,7 +90,7 @@ class Encoder(nn.Module):
             return ret
 
 
-class Agents(nn.Module):
+class GaussianAgents(nn.Module):
     def __init__(
         self,
         num_layers=1,
@@ -185,6 +186,140 @@ class Agents(nn.Module):
             distrs.append(distributions.Normal(mu, sigma, validate_args=False))
 
             ret[:, i] = distrs[i].log_prob(actions_taken).sum(dim=1)
+
+        return ret, distrs
+
+    def value_forward(self, rollout, batch_idx):
+        z = self.value_encoder(rollout["obs"], batch_idx)  # S x B x 32
+        ret = torch.zeros((batch_idx.shape[0], 2))
+        for i in range(2):
+            embed = z[i + 1]  # B x 32
+            ret[:, i] = self.value_head(embed).squeeze(1)  # B x 1  ->  B
+        return ret
+
+
+VonMises.entropy = (
+    lambda self: self.concentration
+    * (
+        1
+        - torch.special.i1e(self.concentration)
+        / (i0e := torch.special.i0e(self.concentration))
+    )
+    + torch.log(i0e)
+    + 1.83787706641
+)
+
+
+@register_kl(VonMises, VonMises)
+def kl_vonmises_vonmises(p, q):
+    i0e_concentration1 = torch.special.i0e(p.concentration)
+    i1e_concentration1 = torch.special.i1e(p.concentration)
+    i0e_concentration2 = torch.special.i0e(q.concentration)
+    return (
+        (q.concentration - p.concentration)
+        + torch.log(i0e_concentration2 / i0e_concentration1)
+        + (p.concentration - q.concentration * torch.cos(p.loc - q.loc))
+        * (i1e_concentration1 / i0e_concentration1)
+    )
+
+
+class VonMisesAgents(nn.Module):
+    def __init__(self, num_layers=1, d_model=32, nhead=2, dim_feedforward=64):
+        super().__init__()
+
+        self.policy_encoder = Encoder(
+            num_layers=num_layers,
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+        )
+        self.value_encoder = Encoder(
+            num_layers=num_layers,
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+        )
+
+        self.move_head = nn.Linear(d_model, 3)
+        self.throw_head = nn.Linear(d_model, 3)
+        self.value_head = nn.Linear(d_model, 1)
+        # self.aux_value_head = nn.Linear(d_model, 1)
+
+        with torch.no_grad():
+            self.move_head.weight *= 0.01
+            self.throw_head.weight *= 0.01
+
+        self._std_offset = torch.log(torch.exp(torch.tensor(0.5)) - 1)
+
+    def step(self, obs: dict[str, np.array]):
+        actions = {
+            "id": np.zeros(2, dtype=np.int64),
+            "target": np.zeros((2, 2), dtype=np.float32),
+        }
+        logps = np.zeros(2, dtype=np.float32)
+        with torch.no_grad():
+            z = self.policy_encoder(obs)  # S x 32
+            for i in range(2):
+                # index 0 is global embedding, 1 is agent 0, 2 is agent 1
+                embed = z[i + 1]
+
+                if obs[f"wizard{i}"][5] == 1:  # throw available
+                    actions["id"][i] = 1
+                    logits = self.throw_head(embed)
+                else:
+                    actions["id"][i] = 0
+                    logits = self.move_head(embed)
+
+                x = logits[0]
+                y = logits[1]
+                angle = torch.atan2(y, x)
+                concentration = F.softplus(logits[2]) + 1e-3
+                distr = distributions.VonMises(angle, concentration)
+
+                action = distr.sample()
+                logp = distr.log_prob(action)
+
+                actions["target"][i] = (
+                    torch.cos(action).item(),
+                    torch.sin(action).item(),
+                )
+                logps[i] = logp.sum().item()
+
+        return actions, logps
+
+    def predict_value(self, obs, _actions):
+        # We could use OTHER agent's action in the future, but for now we only use the
+        # agent's own observation
+        values = np.zeros(2, dtype=np.float32)
+        with torch.no_grad():
+            z = self.value_encoder(obs)  # S x 32
+
+        for i in range(2):
+            embed = z[i + 1]  # index 0 is global embedding, 1 is agent 0, 2 is agent 1
+            values[i] = self.value_head(embed).item()
+        return values
+
+    def policy_forward(self, rollout, batch_idx):
+        z = self.policy_encoder(rollout["obs"], batch_idx)  # S x B x 32
+        distrs = []
+        ret = torch.zeros((batch_idx.shape[0], 2))
+        for i in range(2):
+            embed = z[i + 1]
+            logits = torch.zeros((len(batch_idx), 3))
+
+            throw_turns = rollout["obs"][f"wizard{i}"][batch_idx, 5] == 1
+            logits[throw_turns] = self.throw_head(embed[throw_turns])
+            logits[~throw_turns] = self.move_head(embed[~throw_turns])
+
+            actions_taken = rollout["act"]["target"][batch_idx, i]
+
+            x = logits[:, 0]
+            y = logits[:, 1]
+            concentration = F.softplus(logits[:, 2]) + 1e-3
+            distrs.append(distributions.VonMises(torch.atan2(y, x), concentration))
+
+            angles = torch.atan2(actions_taken[:, 1], actions_taken[:, 0])
+            ret[:, i] = distrs[i].log_prob(angles)
 
         return ret, distrs
 
