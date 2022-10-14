@@ -142,9 +142,7 @@ class BCTrainer(Trainer):
             )
             self.logger.log(**{"grad_norm_" + k: v for k, v in norms.items()})
             if self.grad_clipping is not None:
-                nn.utils.clip_grad_norm_(
-                    self.agents.parameters(), self.grad_clipping
-                )
+                nn.utils.clip_grad_norm_(self.agents.parameters(), self.grad_clipping)
                 self.logger.log(
                     grad_clipped=(norms["total"] > self.grad_clipping),
                 )

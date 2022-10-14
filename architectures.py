@@ -11,7 +11,7 @@ from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD
 
 
 class Encoder(nn.Module):
-    def __init__(self, num_layers, d_model, nhead, dim_feedforward):
+    def __init__(self, num_layers, d_model, nhead, dim_feedforward, dropout):
         super().__init__()
 
         self.d_model = d_model
@@ -25,13 +25,13 @@ class Encoder(nn.Module):
 
         self.encoder = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=0
+                d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout
             ),
             num_layers=num_layers,
             norm=norm,
         )
 
-    def forward(self, obs, batch_idx=None):
+    def forward(self, obs, batch_idx=None, flip_augment=None):
         if batch_idx is None:
             x = torch.zeros((len(obs), 1, self.d_model))
             for i, (k, v) in enumerate(obs.items()):
@@ -46,8 +46,6 @@ class Encoder(nn.Module):
                 else:
                     warnings.warn(f"unexpected key: {k}")
             ret = self.encoder(x).squeeze(dim=1)  # S x 32
-            # if ret.isnan().any():
-            #     raise ValueError
             return ret
         else:
             x = torch.zeros((len(obs), len(batch_idx), self.d_model))  # S x B x 32
@@ -58,18 +56,15 @@ class Encoder(nn.Module):
             for i, (k, v) in enumerate(obs.items()):
                 # shape B, F; F=4 (snaffle), 6 (wizard), etc..
                 entry = v[batch_idx]
+                if flip_augment and not k == "global":
+                    # invert all y positions and y velocities
+                    feat = [1, 3, 5, 7] if k.startswith("bludger") else [1, 3]
+                    entry[np.arange(len(batch_idx) // 2)[:, None], feat] *= -1
+
                 if k.startswith("snaffle"):
-                    if (
-                        not torch.equal(entry.isnan()[:, 0], entry.isnan()[:, 1])
-                        or not torch.equal(entry.isnan()[:, 0], entry.isnan()[:, 2])
-                        or not torch.equal(entry.isnan()[:, 0], entry.isnan()[:, 3])
-                    ):
-                        raise ValueError
                     padding_mask[entry.isnan()[:, 0], i] = 1
                     entry = entry.clone()
                     entry[entry.isnan()] = 0
-                elif entry.isnan().any():
-                    raise ValueError
 
                 if k.startswith("global"):
                     x[i, :] = self.global_prep(entry)
@@ -84,9 +79,6 @@ class Encoder(nn.Module):
 
             ret = self.encoder(x, src_key_padding_mask=padding_mask)  # S x B x 32
 
-            if ret.isnan().any():
-                raise ValueError
-
             return ret
 
 
@@ -98,12 +90,27 @@ class GaussianAgents(nn.Module):
         nhead=2,
         dim_feedforward=64,
         norm_action_mean=False,
+        dropout=0,
+        flip_augment=True,
     ):
         super().__init__()
         self.norm_action_mean = norm_action_mean
+        self.flip_augment = flip_augment
 
-        self.policy_encoder = Encoder(num_layers, d_model, nhead, dim_feedforward)
-        self.value_encoder = Encoder(num_layers, d_model, nhead, dim_feedforward)
+        self.policy_encoder = Encoder(
+            num_layers=num_layers,
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+        )
+        self.value_encoder = Encoder(
+            num_layers=num_layers,
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+        )
 
         self.move_head = nn.Linear(d_model, 4)
         self.throw_head = nn.Linear(d_model, 4)
@@ -164,7 +171,8 @@ class GaussianAgents(nn.Module):
         return values
 
     def policy_forward(self, rollout, batch_idx):
-        z = self.policy_encoder(rollout["obs"], batch_idx)  # S x B x 32
+        # S x B x 32
+        z = self.policy_encoder(rollout["obs"], batch_idx, self.flip_augment)
         distrs = []
         ret = torch.zeros((batch_idx.shape[0], 2))
         for i in range(2):
@@ -180,6 +188,8 @@ class GaussianAgents(nn.Module):
             mu = logits[:, :2]
             if self.norm_action_mean:
                 mu = mu / torch.norm(mu, dim=1, keepdim=True)
+            if self.flip_augment:
+                mu[: len(batch_idx) // 2, 1] *= -1
             sigma = F.softplus(
                 logits[:, 2:] + self._std_offset.to(device=logits.device)
             )
@@ -190,7 +200,8 @@ class GaussianAgents(nn.Module):
         return ret, distrs
 
     def value_forward(self, rollout, batch_idx):
-        z = self.value_encoder(rollout["obs"], batch_idx)  # S x B x 32
+        # S x B x 32
+        z = self.value_encoder(rollout["obs"], batch_idx, self.flip_augment)
         ret = torch.zeros((batch_idx.shape[0], 2))
         for i in range(2):
             embed = z[i + 1]  # B x 32
@@ -224,20 +235,31 @@ def kl_vonmises_vonmises(p, q):
 
 
 class VonMisesAgents(nn.Module):
-    def __init__(self, num_layers=1, d_model=32, nhead=2, dim_feedforward=64):
+    def __init__(
+        self,
+        num_layers=1,
+        d_model=32,
+        nhead=2,
+        dim_feedforward=64,
+        dropout=0,
+        flip_augment=True,
+    ):
         super().__init__()
+        self.flip_augment = flip_augment
 
         self.policy_encoder = Encoder(
             num_layers=num_layers,
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
+            dropout=dropout,
         )
         self.value_encoder = Encoder(
             num_layers=num_layers,
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
+            dropout=dropout,
         )
 
         self.move_head = nn.Linear(d_model, 3)
@@ -300,7 +322,8 @@ class VonMisesAgents(nn.Module):
         return values
 
     def policy_forward(self, rollout, batch_idx):
-        z = self.policy_encoder(rollout["obs"], batch_idx)  # S x B x 32
+        # S x B x 32
+        z = self.policy_encoder(rollout["obs"], batch_idx, self.flip_augment)
         distrs = []
         ret = torch.zeros((batch_idx.shape[0], 2))
         for i in range(2):
@@ -315,6 +338,8 @@ class VonMisesAgents(nn.Module):
 
             x = logits[:, 0]
             y = logits[:, 1]
+            if self.flip_augment:
+                y[: len(batch_idx) // 2] *= -1
             concentration = F.softplus(logits[:, 2]) + 1e-3
             distrs.append(distributions.VonMises(torch.atan2(y, x), concentration))
 
@@ -324,7 +349,8 @@ class VonMisesAgents(nn.Module):
         return ret, distrs
 
     def value_forward(self, rollout, batch_idx):
-        z = self.value_encoder(rollout["obs"], batch_idx)  # S x B x 32
+        # S x B x 32
+        z = self.value_encoder(rollout["obs"], batch_idx, self.flip_augment)
         ret = torch.zeros((batch_idx.shape[0], 2))
         for i in range(2):
             embed = z[i + 1]  # B x 32

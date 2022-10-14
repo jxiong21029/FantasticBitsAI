@@ -1,8 +1,7 @@
 import numpy as np
 import pytest
 
-from env import FantasticBits, DIST_NORM
-from utils import vertical_flip_augment
+from env import FantasticBits
 
 
 @pytest.fixture
@@ -103,24 +102,3 @@ def test_dist_reward(null_action):
 
     _, rewards, _ = env.step(null_action)
     assert rewards[0] == rewards[1] == 0.036
-
-
-def test_flip_augment(null_action):
-    rng = np.random.default_rng()
-
-    env = FantasticBits(seed=rng.integers(2**31))
-    obs = env.reset()
-    double_flipped = vertical_flip_augment(vertical_flip_augment(obs))
-    for k in obs.keys():
-        assert np.array_equal(obs[k], double_flipped[k])
-
-    for entity in env.agents + env.snaffles + env.opponents + env.bludgers:
-        entity.vx = rng.integers(-500, 501)
-        entity.vy = rng.integers(-500, 501)
-
-    obs, _, _ = env.step(null_action)
-    double_flipped = vertical_flip_augment(vertical_flip_augment(obs))
-    for k in obs.keys():
-        assert np.array_equal(obs[k], double_flipped[k])
-        if k != "global":
-            assert -3750 / DIST_NORM <= obs[k][1] <= 3750 / DIST_NORM
