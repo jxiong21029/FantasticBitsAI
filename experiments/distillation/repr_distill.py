@@ -12,7 +12,7 @@ from ppo import PPOTrainer
 from utils import Logger, component_grad_norms
 
 
-class RepresentationDistillationAgents(VonMisesAgents):
+class ReDistillAgents(VonMisesAgents):
     def __init__(
         self,
         num_layers=1,
@@ -58,10 +58,10 @@ class RepresentationDistillationAgents(VonMisesAgents):
         return ret, distrs
 
 
-class RepresentationDistillationTrainer(PPOTrainer):
+class PhasicReDistillTrainer(PPOTrainer):
     def __init__(
         self,
-        agents: RepresentationDistillationAgents,
+        agents: ReDistillAgents,
         demo_filename,
         env_kwargs=None,
         lr=1e-3,
@@ -171,25 +171,123 @@ class RepresentationDistillationTrainer(PPOTrainer):
         self.logger.update_from(phase2_logger)
 
 
+class JointReDistillTrainer(PPOTrainer):
+    def __init__(
+        self,
+        agents: ReDistillAgents,
+        demo_filename,
+        env_kwargs=None,
+        lr=1e-3,
+        weight_decay=1e-4,
+        rollout_steps=4096,
+        gamma=0.99,
+        gae_lambda=0.95,
+        minibatch_size=64,
+        epochs=3,
+        ppo_clip_coeff=0.2,
+        grad_clipping=10.0,
+        entropy_reg=1e-5,
+        beta_bc=1.0,
+        seed=None,
+    ):
+        super().__init__(
+            agents=agents,
+            env_kwargs=env_kwargs,
+            lr=lr,
+            weight_decay=weight_decay,
+            rollout_steps=rollout_steps,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            minibatch_size=minibatch_size,
+            epochs=epochs,
+            ppo_clip_coeff=ppo_clip_coeff,
+            grad_clipping=grad_clipping,
+            entropy_reg=entropy_reg,
+            seed=seed,
+        )
+        self.beta_bc = beta_bc
+
+        with open(demo_filename, "rb") as f:
+            demo_obs, demo_actions = pickle.load(f)
+        self.demo = {
+            "obs": {k: torch.tensor(v) for k, v in demo_obs.items()},
+            "act": {k: torch.tensor(v) for k, v in demo_actions.items()},
+        }
+        for i in range(2):
+            self.demo["act"]["target"] /= torch.norm(
+                self.demo["act"]["target"], dim=2, keepdim=True
+            )
+        self.demo_sz = demo_obs["global"].shape[0]
+        self.demo_idx = np.arange(self.demo_sz)
+        self.rng.shuffle(self.demo_idx)
+        self.ptr = 0
+
+    def train(self):
+        self.collect_rollout()
+
+        idx = np.arange(self.buf.max_size)
+        for _ in range(self.epochs):
+            self.rng.shuffle(idx)
+            for i in range(idx.shape[0] // self.minibatch_size):
+                batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
+
+                logp, distrs = self.agents.policy_forward(self.rollout, batch_idx)
+                ppo_loss = self.ppo_loss(batch_idx, logp, distrs)
+
+                if self.ptr + self.minibatch_size > self.demo_sz:
+                    self.rng.shuffle(self.demo_idx)
+                    self.ptr = 0
+                demo_idx = self.demo_idx[self.ptr : self.ptr + self.minibatch_size]
+                self.ptr += self.minibatch_size
+
+                bc_logp, _ = self.agents.policy_forward_2(self.demo, demo_idx)
+                bc_loss = -bc_logp.mean()
+
+                total_loss = ppo_loss + self.beta_bc * bc_loss
+                self.optim.zero_grad(set_to_none=True)
+                total_loss.backward()
+
+                norms = component_grad_norms(self.agents)
+                self.logger.log(
+                    bc_loss=bc_loss.item(),
+                    total_loss=total_loss.item(),
+                    **{"grad_norm_" + k: v for k, v in norms.items()},
+                )
+                if self.grad_clipping is not None:
+                    nn.utils.clip_grad_norm_(
+                        self.agents.parameters(), self.grad_clipping
+                    )
+                    self.logger.log(
+                        grad_clipped=(norms["total"] > self.grad_clipping)
+                        if self.grad_clipping is not None
+                        else False,
+                    )
+                self.optim.step()
+
+        self.logger.step()
+
+
 def main():
     import tqdm
 
-    trainer = RepresentationDistillationTrainer(
-        agents=RepresentationDistillationAgents(
+    trainer = JointReDistillTrainer(
+        agents=ReDistillAgents(
             num_layers=2,
             d_model=64,
             nhead=2,
             dim_feedforward=128,
         ),
-        demo_filename="../../data/basic_demo.pickle",
-        lr=10**-3,
-        minibatch_size=256,
-        weight_decay=10**-3.5,
-        epochs=2,
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
             "reward_own_goal": 3.0,
         },
+        demo_filename="../../data/basic_demo.pickle",
+        lr=10**-3,
+        gae_lambda=0.5,
+        minibatch_size=256,
+        weight_decay=10**-3.5,
+        epochs=2,
+        beta_bc=1e-1,
     )
     for i in tqdm.trange(201):
         trainer.train()

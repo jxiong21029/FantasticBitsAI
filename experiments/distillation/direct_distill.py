@@ -2,6 +2,7 @@ import copy
 
 import numpy as np
 import torch
+import torch.nn as nn
 from torch import distributions
 
 from architectures import VonMisesAgents
@@ -77,7 +78,7 @@ class DirectDistillationTrainer(PPOTrainer):
 
                 self.logger.log(**{"grad_norm_" + k: v for k, v in norms.items()})
                 if self.grad_clipping is not None:
-                    torch.nn.utils.clip_grad_norm_(
+                    nn.utils.clip_grad_norm_(
                         self.agents.parameters(), self.grad_clipping
                     )
                     self.logger.log(

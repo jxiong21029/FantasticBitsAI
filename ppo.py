@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.distributions as distributions
 
 from architectures import GaussianAgents
@@ -248,7 +249,7 @@ class PPOTrainer(Trainer):
         self.logger.log(
             loss_pi=loss_pi.item(),
             loss_v=loss_v.item(),
-            loss_tot=total_loss.item(),
+            loss_ppo=total_loss.item(),
             ppo_clip_ratio=torch.gt(torch.abs(ratio - 1), self.ppo_clip_coeff)
             .float()
             .mean()
@@ -289,7 +290,7 @@ class PPOTrainer(Trainer):
                     grad_norm_value_head=grad_norm(self.agents.value_head),
                 )
                 if self.grad_clipping is not None:
-                    torch.nn.utils.clip_grad_norm_(
+                    nn.utils.clip_grad_norm_(
                         self.agents.parameters(), self.grad_clipping
                     )
                     self.logger.log(

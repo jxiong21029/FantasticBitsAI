@@ -6,12 +6,12 @@ import torch
 from env import FantasticBits
 
 # from architectures import VonMisesAgents
-from experiments.distillation.repr_distill import RepresentationDistillationAgents
+from experiments.distillation.repr_distill import ReDistillAgents
 
 path = "experiments/ray_results/repr_distill_backup/train_41faa86e_28_epochs=2,lr=0.0010,minibatch_size=1024,weight_decay=0.0000_2022-10-13_08-12-07/{'lr': 0.001, 'minibatch_size': 1024, 'epochs': 2, 'weight_decay': 1e-05}_1.ckpt"
 
 # agents = VonMisesAgents(num_layers=2, d_model=64, dim_feedforward=128)
-agents = RepresentationDistillationAgents(num_layers=2, d_model=64, dim_feedforward=128)
+agents = ReDistillAgents(num_layers=2, d_model=64, dim_feedforward=128)
 agents.load_state_dict(torch.load(path))
 agents.eval()
 

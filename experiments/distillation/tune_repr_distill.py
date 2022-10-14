@@ -1,9 +1,6 @@
 import torch
 from ray import air, tune
-from repr_distill import (
-    RepresentationDistillationAgents,
-    RepresentationDistillationTrainer,
-)
+from repr_distill import PhasicReDistillTrainer, ReDistillAgents
 
 from tuning import (
     IndependentGroupsSearch,
@@ -16,8 +13,8 @@ from tuning import (
 def train(config):
     results = []
     for run in range(3):
-        trainer = RepresentationDistillationTrainer(
-            agents=RepresentationDistillationAgents(
+        trainer = PhasicReDistillTrainer(
+            agents=ReDistillAgents(
                 num_layers=2,
                 d_model=64,
                 nhead=2,

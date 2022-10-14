@@ -2,6 +2,7 @@ import pickle
 
 import numpy as np
 import torch
+import torch.nn as nn
 import tqdm
 
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
@@ -141,7 +142,7 @@ class BCTrainer(Trainer):
             )
             self.logger.log(**{"grad_norm_" + k: v for k, v in norms.items()})
             if self.grad_clipping is not None:
-                torch.nn.utils.clip_grad_norm_(
+                nn.utils.clip_grad_norm_(
                     self.agents.parameters(), self.grad_clipping
                 )
                 self.logger.log(
