@@ -1,7 +1,6 @@
+import copy
 import math
 import os
-import re
-import shutil
 from collections import defaultdict
 
 import matplotlib
@@ -146,3 +145,17 @@ def component_grad_norms(module, exclude=None):
 
     component_norms.update(total=total_norm)
     return component_norms
+
+
+def vertical_flip_augment(obs):
+    ret = copy.deepcopy(obs)
+    for k in obs.keys():
+        if k == "global":
+            continue
+        ret[k][1] = -ret[k][1]
+        ret[k][3] = -ret[k][3]
+        if k.startswith("bludger"):
+            ret[k][5] = -ret[k][5]
+        if k.startswith("bludger"):
+            ret[k][7] = -ret[k][7]
+    return ret
