@@ -8,6 +8,7 @@ from tuning import (
     grid_search,
     log_halving_search,
     q_log_halving_search,
+    uniform_halving_search,
 )
 
 
@@ -34,7 +35,7 @@ def train(config):
             },
         )
         start_beta = config["start_beta"]
-        end_beta = config["end_beta"]
+        end_beta = config["end_beta_prop"] * start_beta
         for i in range(201):
             trainer.beta_kl = start_beta + (end_beta - start_beta) * i / 200
             trainer.train()
@@ -64,29 +65,32 @@ def main():
     search_alg = IndependentGroupsSearch(
         search_space={
             "lr": log_halving_search(1e-4, 1e-3, 1e-2),
-            "1-gae_lambda": log_halving_search(0.025, 0.1, 0.4),
             "minibatch_size": q_log_halving_search(256, 512, 1024),
-            "epochs": grid_search(1, 2, 3),
             "weight_decay": log_halving_search(1e-5, 1e-4, 1e-3),
-            "start_beta": 1.0,
-            "end_beta": grid_search(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+            "start_beta": log_halving_search(1e-2, 1e-1, 1),
+            "end_beta_prop": uniform_halving_search(0.2, 0.5, 0.8),
+            "1-gae_lambda": log_halving_search(0.025, 0.1, 0.4),
+            "epochs": grid_search(1, 2, 3),
         },
         depth=1,
         defaults={
             "lr": 1e-3,
-            "1-gae_lambda": 0.1,
-            "minibatch_size": 256,
-            "epochs": 2,
+            "minibatch_size": 512,
             "weight_decay": 1e-4,
-            "start_beta": 1.0,
-            "end_beta": 1.0,
+            "start_beta": 0.1,
+            "end_beta_prop": 1.0,
+            "1-gae_lambda": 0.1,
+            "epochs": 2,
         },
         groups=(
-            ("1-gae_lambda",),
             ("lr", "minibatch_size"),
             ("weight_decay",),
+            (
+                "start_beta",
+                "end_beta_prop",
+            ),
+            ("1-gae_lambda",),
             ("epochs",),
-            ("end_beta",),
         ),
         metric="mo3_eval_goals_scored_mean",
         mode="max",

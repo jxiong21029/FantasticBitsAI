@@ -60,17 +60,19 @@ class DirectDistillationTrainer(PPOTrainer):
                 batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
 
                 logp, pi = self.agents.policy_forward(self.rollout, batch_idx)
-                total_loss = self.ppo_loss(batch_idx, logp, pi)
+                loss_ppo = self.ppo_loss(batch_idx, logp, pi)
 
                 with torch.no_grad():
                     _, frozen_pi = self.frozen_agents.policy_forward(
                         self.rollout, batch_idx
                     )
-                total_loss += self.beta_kl * sum(
+                loss_kl = self.beta_kl * sum(
                     distributions.kl_divergence(frozen_pi[i], pi[i]).mean()
                     for i in range(2)
                 )
+                self.logger.log(loss_kl=loss_kl.item())
 
+                total_loss = loss_ppo + loss_kl
                 self.optim.zero_grad(set_to_none=True)
                 total_loss.backward()
 
@@ -100,22 +102,26 @@ def main():
             d_model=64,
             nhead=2,
             dim_feedforward=128,
+            dropout=0,
         ),
         ckpt_filename="../../bc_agents.pth",
-        lr=10**-3,
-        minibatch_size=256,
-        weight_decay=10**-3.5,
+        lr=10**-3.5,
+        minibatch_size=512,
+        weight_decay=10**-3,
+        gae_lambda=0.975,
         epochs=2,
+        beta_kl=0.1,
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
             "reward_own_goal": 3.0,
         },
     )
-    for i in tqdm.trange(201):
+    for i in tqdm.trange(501):
         trainer.train()
         if i % 20 == 0:
             trainer.evaluate()
             trainer.logger.generate_plots("plotgen_direct")
+    torch.save(trainer.agents.state_dict(), "direct_distill_agents.pth")
 
 
 if __name__ == "__main__":

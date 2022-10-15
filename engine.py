@@ -391,6 +391,7 @@ def engine_step(entities):
     t = 0.0
     _iters = 0
 
+    worth_checking = set(range(len(entities)))
     while t < 1.0:
         _iters += 1
         if _iters >= 999:
@@ -398,23 +399,29 @@ def engine_step(entities):
             break
         first_col = None
 
+        boomed = set()
         # We look for all the collisions that are going to occur during the turn
         for i, entity in enumerate(entities):
-            for col in entity.map_collisions():
-                if col.t + t < 1.0 and (first_col is None or col.t < first_col.t):
-                    first_col = col
+            if i in worth_checking:
+                for col in entity.map_collisions():
+                    if col.t + t < 1.0:
+                        boomed.add(i)
+                        if first_col is None or col.t < first_col.t:
+                            first_col = col
 
             # Collision with another pod?
             for j in range(i + 1, len(entities)):
+                if i not in worth_checking and j not in worth_checking:
+                    continue
                 col = entity.collision(entities[j])
 
                 # If the collision occurs earlier than the current one, keep it
-                if (
-                    col is not None
-                    and col.t + t < 1.0
-                    and (first_col is None or col.t < first_col.t)
-                ):
-                    first_col = col
+                if col is not None and col.t + t < 1.0:
+                    boomed.add(i)
+                    boomed.add(j)
+                    if first_col is None or col.t < first_col.t:
+                        first_col = col
+        worth_checking = boomed
 
         if first_col is None:
             # No collision, we can move the entities until the end of the turn
@@ -428,13 +435,13 @@ def engine_step(entities):
                 snaffle = first_col.a
 
                 entities.remove(snaffle)
+                worth_checking = set(range(len(entities)))
 
                 if snaffle.x + snaffle.vx < 0:
                     scored_goals.append((2, snaffle))  # returns which team scored
                 else:
                     scored_goals.append((1, snaffle))
-
-                continue
+                continue  # don't bother stepping forward since no bounces occurred
 
             # Move the entities to reach the time `t` of the collision
             for entity in entities:

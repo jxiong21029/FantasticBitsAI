@@ -9,6 +9,13 @@ from torch.distributions import VonMises, register_kl
 
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD
 
+ordered_keys = (
+    ("global",)
+    + tuple(f"wizard{i}" for i in range(4))
+    + tuple(f"snaffle{i}" for i in range(7))
+    + tuple(f"bludger{i}" for i in range(2))
+)
+
 
 class Encoder(nn.Module):
     def __init__(self, num_layers, d_model, nhead, dim_feedforward, dropout):
@@ -31,40 +38,54 @@ class Encoder(nn.Module):
             norm=norm,
         )
 
+    @property
+    def device(self):
+        return self.global_prep.weight.device
+
     def forward(self, obs, batch_idx=None, flip_augment=None):
+        for k in ordered_keys:
+            assert k in obs or k.startswith("snaffle")
         if batch_idx is None:
-            x = torch.zeros((len(obs), 1, self.d_model))
-            for i, (k, v) in enumerate(obs.items()):
+            x = torch.zeros((len(obs), 1, self.d_model), device=self.device)
+            for i, k in enumerate(k for k in ordered_keys if k in obs):
+                v = obs[k]
                 if k.startswith("global"):
-                    x[i, :] = self.global_prep(torch.tensor(v))
+                    x[i, :] = self.global_prep(torch.tensor(v, device=self.device))
                 elif k.startswith("wizard"):
-                    x[i, :] = self.wizard_prep(torch.tensor(v))
+                    x[i, :] = self.wizard_prep(torch.tensor(v, device=self.device))
                 elif k.startswith("snaffle"):
-                    x[i, :] = self.snaffle_prep(torch.tensor(v))
+                    x[i, :] = self.snaffle_prep(torch.tensor(v, device=self.device))
                 elif k.startswith("bludger"):
-                    x[i, :] = self.bludger_prep(torch.tensor(v))
+                    x[i, :] = self.bludger_prep(torch.tensor(v, device=self.device))
                 else:
                     warnings.warn(f"unexpected key: {k}")
             ret = self.encoder(x).squeeze(dim=1)  # S x 32
             return ret
         else:
-            x = torch.zeros((len(obs), len(batch_idx), self.d_model))  # S x B x 32
-
+            # S x B x 32
+            x = torch.zeros(
+                (len(obs), len(batch_idx), self.d_model), device=self.device
+            )
             # B x S
-            padding_mask = torch.zeros((len(batch_idx), len(obs)), dtype=bool)
+            padding_mask = torch.zeros(
+                (len(batch_idx), len(obs)), dtype=bool, device=self.device
+            )
 
-            for i, (k, v) in enumerate(obs.items()):
+            for i, k in enumerate(k for k in ordered_keys if k in obs):
+                entry = obs[k][batch_idx]
                 # shape B, F; F=4 (snaffle), 6 (wizard), etc..
-                entry = v[batch_idx]
+
+                if k.startswith("snaffle") or (flip_augment and not k == "global"):
+                    entry = entry.clone()
+
+                if k.startswith("snaffle"):
+                    padding_mask[entry.isnan()[:, 0], i] = 1
+                    entry[entry.isnan()] = 0
+
                 if flip_augment and not k == "global":
                     # invert all y positions and y velocities
                     feat = [1, 3, 5, 7] if k.startswith("bludger") else [1, 3]
                     entry[np.arange(len(batch_idx) // 2)[:, None], feat] *= -1
-
-                if k.startswith("snaffle"):
-                    padding_mask[entry.isnan()[:, 0], i] = 1
-                    entry = entry.clone()
-                    entry[entry.isnan()] = 0
 
                 if k.startswith("global"):
                     x[i, :] = self.global_prep(entry)
@@ -174,10 +195,10 @@ class GaussianAgents(nn.Module):
         # S x B x 32
         z = self.policy_encoder(rollout["obs"], batch_idx, self.flip_augment)
         distrs = []
-        ret = torch.zeros((batch_idx.shape[0], 2))
+        ret = torch.zeros((batch_idx.shape[0], 2), device=self.device)
         for i in range(2):
             embed = z[i + 1]
-            logits = torch.zeros((len(batch_idx), 4))
+            logits = torch.zeros((len(batch_idx), 4), device=self.device)
 
             throw_turns = rollout["obs"][f"wizard{i}"][batch_idx, 5] == 1
             logits[throw_turns] = self.throw_head(embed[throw_turns])
@@ -202,7 +223,7 @@ class GaussianAgents(nn.Module):
     def value_forward(self, rollout, batch_idx):
         # S x B x 32
         z = self.value_encoder(rollout["obs"], batch_idx, self.flip_augment)
-        ret = torch.zeros((batch_idx.shape[0], 2))
+        ret = torch.zeros((batch_idx.shape[0], 2), device=self.device)
         for i in range(2):
             embed = z[i + 1]  # B x 32
             ret[:, i] = self.value_head(embed).squeeze(1)  # B x 1  ->  B
@@ -271,7 +292,9 @@ class VonMisesAgents(nn.Module):
             self.move_head.weight *= 0.01
             self.throw_head.weight *= 0.01
 
-        self._std_offset = torch.log(torch.exp(torch.tensor(0.5)) - 1)
+    @property
+    def device(self):
+        return self.move_head.weight.device
 
     def step(self, obs: dict[str, np.array]):
         actions = {
@@ -296,7 +319,9 @@ class VonMisesAgents(nn.Module):
                 y = logits[1]
                 angle = torch.atan2(y, x)
                 concentration = F.softplus(logits[2]) + 1e-3
-                distr = distributions.VonMises(angle, concentration)
+                distr = distributions.VonMises(
+                    angle, concentration, validate_args=False
+                )
 
                 action = distr.sample()
                 logp = distr.log_prob(action)
@@ -325,10 +350,10 @@ class VonMisesAgents(nn.Module):
         # S x B x 32
         z = self.policy_encoder(rollout["obs"], batch_idx, self.flip_augment)
         distrs = []
-        ret = torch.zeros((batch_idx.shape[0], 2))
+        ret = torch.zeros((batch_idx.shape[0], 2), device=self.device)
         for i in range(2):
             embed = z[i + 1]
-            logits = torch.zeros((len(batch_idx), 3))
+            logits = torch.zeros((len(batch_idx), 3), device=self.device)
 
             throw_turns = rollout["obs"][f"wizard{i}"][batch_idx, 5] == 1
             logits[throw_turns] = self.throw_head(embed[throw_turns])
@@ -341,7 +366,11 @@ class VonMisesAgents(nn.Module):
             if self.flip_augment:
                 y[: len(batch_idx) // 2] *= -1
             concentration = F.softplus(logits[:, 2]) + 1e-3
-            distrs.append(distributions.VonMises(torch.atan2(y, x), concentration))
+            distrs.append(
+                distributions.VonMises(
+                    torch.atan2(y, x), concentration, validate_args=False
+                )
+            )
 
             angles = torch.atan2(actions_taken[:, 1], actions_taken[:, 0])
             ret[:, i] = distrs[i].log_prob(angles)
@@ -351,7 +380,7 @@ class VonMisesAgents(nn.Module):
     def value_forward(self, rollout, batch_idx):
         # S x B x 32
         z = self.value_encoder(rollout["obs"], batch_idx, self.flip_augment)
-        ret = torch.zeros((batch_idx.shape[0], 2))
+        ret = torch.zeros((batch_idx.shape[0], 2), device=self.device)
         for i in range(2):
             embed = z[i + 1]  # B x 32
             ret[:, i] = self.value_head(embed).squeeze(1)  # B x 1  ->  B

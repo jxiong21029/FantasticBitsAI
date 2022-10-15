@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from env import FantasticBits
+from env import FantasticBits, Snaffle, Wizard
 
 
 @pytest.fixture
@@ -102,3 +102,32 @@ def test_dist_reward(null_action):
 
     _, rewards, _ = env.step(null_action)
     assert rewards[0] == rewards[1] == 0.036
+
+
+def test_collision_detection():
+    rng = np.random.default_rng(0xBEEEF)
+    env = FantasticBits(seed=rng.integers(2**31))
+    for _ in range(10):
+        env.reset()
+        done = False
+        while not done:
+            _, _, done = env.step(
+                {
+                    "id": np.zeros(
+                        2,
+                    ),
+                    "target": rng.normal(size=(2, 2)),
+                }
+            )
+            entities = env.agents + env.opponents + env.bludgers + env.snaffles
+            for i, entity in enumerate(entities):
+                for other in entities[i + 1 :]:
+                    a = (1 if isinstance(entity, Snaffle) else 0) + (
+                        1 if isinstance(other, Snaffle) else 0
+                    )
+                    b = (1 if isinstance(entity, Wizard) else 0) + (
+                        1 if isinstance(other, Wizard) else 0
+                    )
+                    if a == 2 or a == b == 1:
+                        continue
+                    assert entity.distance(other) + 1 >= entity.rad + other.rad

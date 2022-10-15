@@ -7,10 +7,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.signal
+import seaborn
 import torch
 from ray import tune
 
 matplotlib.use("Tkagg")
+seaborn.set_theme()
 
 
 # adapted from SpinningUp PPO
@@ -144,3 +146,16 @@ def component_grad_norms(module, exclude=None):
 
     component_norms.update(total=total_norm)
     return component_norms
+
+
+def profileit(func):
+    import cProfile
+
+    def wrapper(*args, **kwargs):
+        datafn = func.__name__ + ".profile"  # Name the data file sensibly
+        prof = cProfile.Profile()
+        retval = prof.runcall(func, *args, **kwargs)
+        prof.dump_stats(datafn)
+        return retval
+
+    return wrapper
