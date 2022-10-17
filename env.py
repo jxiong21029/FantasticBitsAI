@@ -230,7 +230,7 @@ class FantasticBits:
         if done and self.logger is not None:
             self.logger.log(
                 goals_scored=self.score[0],
-                mean_agent_reward=self.episode_rewards.mean(),
+                episode_reward=self.episode_rewards.mean(),
                 episode_len=self.t,
             )
 

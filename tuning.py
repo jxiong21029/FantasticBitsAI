@@ -4,9 +4,6 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import numpy as np
-from ray.tune.execution.trial_runner import TrialRunner
-from ray.tune.experiment import Trial
-from ray.tune.schedulers import TrialScheduler
 from ray.tune.search import Searcher
 
 
@@ -250,41 +247,6 @@ class IntervalHalvingSearch(Searcher):
                     )
 
         del self.in_progress[trial_id]
-
-
-class IntervalHalvingScheduler(TrialScheduler):
-    # TODO early stop a trial if its children have already been fully allocated
-    #  (interval halving exclusive)
-
-    def __init__(self, searcher: IntervalHalvingSearch, early_stop_max_iters: int):
-        self.searcher = searcher
-        self.early_stop_max_iters = early_stop_max_iters
-
-    def on_trial_result(
-        self, trial_runner: TrialRunner, trial: Trial, result: dict
-    ) -> str:
-        if trial["training_iteration"] > self.early_stop_max_iters:
-            return self.CONTINUE
-
-        # early stops trials if parents were found to not be previous depth best
-        node = self.searcher.in_progress[trial.trial_id]
-        if (
-            node.depth - 1 in self.searcher.best_config
-            and node.parent_config != self.best_config[node.depth - 1]
-            and node.parent_config
-            not in [
-                n.config for n in self.in_progress.values() if n.depth == node.depth - 1
-            ]
-        ):
-            return self.STOP
-
-        # early stops trials if node's children have all been suggested
-        if node.depth < self.searcher.max_depth and all(
-            SearchNode(cfg, None, node.depth + 1) in self.searcher.all_deployed
-            for cfg in self.searcher.config_neighbors(node.config, node.depth + 1)
-        ):
-            return self.STOP
-        return self.CONTINUE
 
 
 @dataclass

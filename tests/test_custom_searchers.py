@@ -356,24 +356,3 @@ def test_independent_groups_half_reported():
             suggestion["a"], 10 ** (-2.5), rtol=1e-3
         )
     assert set(suggestion["b"] for suggestion in group_2_suggestions) == {4, 5, 6}
-
-
-def test_interval_halving_scheduler():
-    searcher = IntervalHalvingSearch(
-        search_space={
-            "lr": log_halving_search(1e-5, 1e-3, 1e-1),
-        },
-        depth=2,
-        metric="valid_loss",
-        mode="min",
-    )
-
-    scheduler = IntervalHalvingScheduler(searcher, 5)
-
-    def trainable(config):
-        tune.report(valid_loss=0.1)
-
-    tune.run(
-        trainable,
-    )
-    # TODO finish writing test

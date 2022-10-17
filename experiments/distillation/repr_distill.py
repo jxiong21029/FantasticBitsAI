@@ -50,7 +50,11 @@ class ReDistillAgents(VonMisesAgents):
             x = logits[:, 0]
             y = logits[:, 1]
             concentration = F.softplus(logits[:, 2]) + 1e-3
-            distrs.append(distributions.VonMises(torch.atan2(y, x), concentration))
+            distrs.append(
+                distributions.VonMises(
+                    torch.atan2(y, x), concentration, validate_args=False
+                )
+            )
 
             angles = torch.atan2(actions_taken[:, 1], actions_taken[:, 0])
             ret[:, i] = distrs[i].log_prob(angles)
@@ -122,12 +126,6 @@ class PhasicReDistillTrainer(PPOTrainer):
         idx = np.arange(self.buf.max_size)
         self.rng.shuffle(idx)
 
-        # TODO: things to check for
-        #   tensor shapes
-        #   gradient flow (both BC and KL)
-        #   KL makes policy closer
-        #   attributes reasonable (ptr, demo_idx)
-        #   optim targets
         for i in range(idx.shape[0] // self.minibatch_size):
             batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
 

@@ -114,6 +114,5 @@ def main():
     print("best config:", search_alg.best_config)
 
 
-# TODO parameterize dropout, add flip augmentation
 if __name__ == "__main__":
     main()

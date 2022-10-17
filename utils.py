@@ -10,6 +10,7 @@ import scipy.signal
 import seaborn
 import torch
 from ray import tune
+from ray.air import session
 
 matplotlib.use("Tkagg")
 seaborn.set_theme()
@@ -81,6 +82,9 @@ class Logger:
 
     def tune_report(self):
         tune.report(**{k: v[-1] for k, v in self.cumulative_data.items()})
+
+    def air_report(self, **kwargs):
+        session.report({k: v[-1] for k, v in self.cumulative_data.items()}, **kwargs)
 
     def to_df(self):
         return pd.DataFrame(self.cumulative_data)

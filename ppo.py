@@ -289,11 +289,8 @@ class PPOTrainer(Trainer):
 
         idx = np.arange(self.buf.max_size)
 
-        # TODO hyperparameter tuning / evaluation framework
         # TODO architecture design: e.g. add relu, norm after preprocessors, restructure
         #  obs/action embeddings
-        # TODO write a blog post about this
-        # TODO boost performance w/ behavioral cloning + KL penalty finetuning
         for _ in range(self.epochs):
             self.rng.shuffle(idx)
             for i in range(idx.shape[0] // self.minibatch_size):
