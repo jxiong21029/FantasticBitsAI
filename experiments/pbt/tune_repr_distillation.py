@@ -17,15 +17,19 @@ def train(config):
         agents,
         demo_filename="../../../../data/basic_demo.pickle",
         lr=config["lr"],
-        gae_lambda=0.975,
+        gae_lambda=1 - config["1-gae_lambda"],
         minibatch_size=config["minibatch_size"],
         weight_decay=config["weight_decay"],
         epochs=config["epochs"],
         beta_bc=config["beta_bc"],
+        entropy_reg=config["entropy_reg"],
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": 3.0,
-            "reward_teammate_goal": 0.0,
+            "reward_own_goal": config["reward_own_goal"],
+            "reward_teammate_goal": config["reward_own_goal"]
+            if config["shared_reward"]
+            else 0.0,
+            "reward_opponent_goal": config["reward_opponent_goal"],
         },
     )
 
@@ -61,10 +65,15 @@ def train(config):
 def main():
     param_space = {
         "lr": tune.loguniform(10**-4, 10**-2.5),
+        "1-gae_lambda": tune.loguniform(10**-2.5, 10**-0.5),
         "minibatch_size": [256, 512, 1024],
         "weight_decay": tune.loguniform(10**-6, 10**-3),
         "epochs": [1, 2, 3],
         "beta_bc": tune.loguniform(10**-2.5, 1),
+        "entropy_reg": tune.loguniform(10**-6, 10**-4),
+        "reward_own_goal": [1, 2, 3],
+        "shared_reward": [True, False],
+        "reward_opponent_goal": [-3, -2, -1, 0],
     }
 
     resample_prob = 0.25
@@ -110,7 +119,7 @@ def main():
             time_budget_s=3600 * 12,
         ),
         run_config=air.RunConfig(
-            name="repr_distill_pbt",
+            name="repr_distill_pbt_2",
             local_dir="../ray_results",
         ),
     )
