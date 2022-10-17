@@ -144,6 +144,10 @@ class GaussianAgents(nn.Module):
 
         self._std_offset = torch.log(torch.exp(torch.tensor(0.5)) - 1)
 
+    @property
+    def device(self):
+        return self.move_head.weight.device
+
     def step(self, obs: dict[str, np.array]):
         actions = {
             "id": np.zeros(2, dtype=np.int64),

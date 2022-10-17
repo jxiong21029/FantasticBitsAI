@@ -195,12 +195,10 @@ class PPOTrainer(Trainer):
     def collect_rollout(self):
         with torch.no_grad():
             self.agents.to(self.rollout_device)
-            curr_ep_reward = 0
 
             for t in range(self.buf.max_size):
                 action, logp = self.agents.step(self.env_obs)
                 next_obs, reward, done = self.env.step(action)
-                curr_ep_reward += reward.sum()
                 self.buf.store(self.env_obs, action, reward, logp)
                 self.env_obs = next_obs
 
@@ -226,9 +224,6 @@ class PPOTrainer(Trainer):
                     ).numpy()
                     self.buf.finish_path(value)
                     self.env_obs = self.env.reset()
-
-                    self.logger.log(rollout_ep_reward=curr_ep_reward)
-                    curr_ep_reward = 0
 
         self.rollout = self.buf.get()
 
