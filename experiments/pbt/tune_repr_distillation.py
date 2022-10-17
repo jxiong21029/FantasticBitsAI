@@ -114,12 +114,11 @@ def main():
         train,
         tune_config=tune.TuneConfig(
             scheduler=pbt,
-            num_samples=-1,
-            max_concurrent_trials=8,
+            num_samples=12,
             time_budget_s=3600 * 12,
         ),
         run_config=air.RunConfig(
-            name="repr_distill_pbt_2",
+            name="repr_distill_pbt_3",
             local_dir="../ray_results",
         ),
     )
