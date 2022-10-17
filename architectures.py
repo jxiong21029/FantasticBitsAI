@@ -144,6 +144,10 @@ class GaussianAgents(nn.Module):
 
         self._std_offset = torch.log(torch.exp(torch.tensor(0.5)) - 1)
 
+    @property
+    def device(self):
+        return self.move_head.weight.device
+
     def step(self, obs: dict[str, np.array]):
         actions = {
             "id": np.zeros(2, dtype=np.int64),
@@ -164,7 +168,7 @@ class GaussianAgents(nn.Module):
                     logits = self.move_head(embed)
 
                 mu = logits[:2]
-                if self.norm_action_mean == "normed_euclidean":
+                if self.norm_action_mean:
                     mu = mu / torch.norm(mu)
                 sigma = F.softplus(
                     logits[2:] + self._std_offset.to(device=logits.device)
@@ -176,6 +180,70 @@ class GaussianAgents(nn.Module):
 
                 actions["target"][i] = action.cpu().numpy()
                 logps[i] = logp.sum().item()
+
+        return actions, logps
+
+    def vectorized_step(self, obses):
+        size = len(obses)
+
+        actions = [
+            {
+                "id": np.zeros(2, dtype=np.int64),
+                "target": np.zeros((2, 2), dtype=np.float32),
+            }
+            for _ in range(size)
+        ]
+        logps = np.zeros((size, 2), dtype=np.float32)
+
+        stacked_obs = {
+            "global": torch.zeros((size, SZ_GLOBAL)),
+        }
+        for i in range(4):
+            stacked_obs[f"wizard{i}"] = torch.zeros(
+                (size, SZ_WIZARD), device=self.device
+            )
+        for i in range(7):
+            stacked_obs[f"snaffle{i}"] = torch.full(
+                (size, SZ_SNAFFLE), torch.nan, device=self.device
+            )
+        for i in range(2):
+            stacked_obs[f"bludger{i}"] = torch.zeros(
+                (size, SZ_BLUDGER), device=self.device
+            )
+
+        for i in range(size):
+            for k in stacked_obs.keys():
+                if k in obses[i]:
+                    stacked_obs[k][i] = torch.from_numpy(obses[i][k])
+
+        with torch.no_grad():
+            # S x B X 32
+            z = self.policy_encoder(stacked_obs, batch_idx=np.arange(size))
+            for b in range(size):
+                for i in range(2):
+                    assert z[i + 1].shape[0] == size  # TODO remove
+                    embed = z[i + 1][b]
+
+                    if obses[b][f"wizard{i}"][5] == 1:  # throw available
+                        actions[b]["id"][i] = 1
+                        logits = self.throw_head(embed)
+                    else:
+                        actions[b]["id"][i] = 0
+                        logits = self.move_head(embed)
+
+                    mu = logits[:2]
+                    if self.norm_action_mean:
+                        mu = mu / torch.norm(mu)
+                    sigma = F.softplus(
+                        logits[2:] + self._std_offset.to(device=logits.device)
+                    )
+                    distr = distributions.Normal(mu, sigma, validate_args=False)
+
+                    action = distr.sample()
+                    logp = distr.log_prob(action)
+
+                    actions[b]["target"][i] = action.cpu().numpy()
+                    logps[b][i] = logp.sum().item()
 
         return actions, logps
 
