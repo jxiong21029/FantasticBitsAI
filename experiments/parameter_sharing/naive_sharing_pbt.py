@@ -21,12 +21,13 @@ def train(config):
         agents,
         demo_filename="../../../../data/basic_demo.pickle",
         lr=config["lr"],
-        gae_lambda=1 - config["1-gae_lambda"],
-        minibatch_size=config["minibatch_size"],
+        minibatch_size=512,
         weight_decay=config["weight_decay"],
         epochs=config["epochs"],
+        gae_lambda=1 - config.get("1-gae_lambda", 0.03),
         beta_bc=config["beta_bc"],
         entropy_reg=config["entropy_reg"],
+        ppo_clip_coeff=config["ppo_clip_coeff"],
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
             "reward_own_goal": config["reward_own_goal"],
@@ -68,13 +69,12 @@ def train(config):
 
 def main():
     param_space = {
-        "lr": tune.loguniform(10**-4, 10**-2.5),
-        "1-gae_lambda": tune.loguniform(10**-2.5, 10**-0.5),
-        "minibatch_size": [256, 512, 1024],
+        "lr": tune.loguniform(10**-4, 10**-3),
         "weight_decay": tune.loguniform(10**-6, 10**-3),
         "epochs": [1, 2, 3],
         "beta_bc": tune.loguniform(10**-2.5, 1),
         "entropy_reg": tune.loguniform(10**-6, 10**-4),
+        "ppo_clip_coeff": [0.05, 0.1, 0.2],
         "reward_own_goal": [1, 2, 3],
         "shared_reward": [True, False],
         "reward_opponent_goal": [-3, -2, -1, 0],
@@ -109,7 +109,7 @@ def main():
         time_attr="training_iteration",
         metric="eval_goals_scored_mean",
         mode="max",
-        perturbation_interval=2,
+        perturbation_interval=3,
         hyperparam_mutations=param_space,
     )
     pbt._get_new_config = custom_get_new_config
@@ -122,7 +122,7 @@ def main():
             time_budget_s=3600 * 12,
         ),
         run_config=air.RunConfig(
-            name="repr_distill_pbt_3",
+            name="ps_redistill_pbt",
             local_dir="../ray_results",
         ),
     )
