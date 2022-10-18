@@ -51,6 +51,7 @@ class DirectDistillationTrainer(PPOTrainer):
 
     def train(self):
         self.collect_rollout()
+        self.train()
 
         idx = np.arange(self.buf.max_size)
 

@@ -39,8 +39,6 @@ class Trainer(ABC):
         for k, v in temp_logger.cumulative_data.items():
             self.logger.cumulative_data["eval_" + k].extend(v)
 
-        self.agents.train()
-
     def evaluate_with_render(self):
         import time
 
@@ -58,5 +56,3 @@ class Trainer(ABC):
             time.sleep(0.1)
         print(f"total reward: {tot_rew.tolist()}")
         print(f"final score: {eval_env.score[0]} - {eval_env.score[1]}")
-
-        self.agents.train()
