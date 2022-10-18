@@ -5,9 +5,11 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
+from ray import tune
 
 from tuning import (
     IndependentGroupsSearch,
+    IntervalHalvingScheduler,
     IntervalHalvingSearch,
     grid_search,
     log_halving_search,

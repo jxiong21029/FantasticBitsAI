@@ -4,13 +4,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import numpy as np
-import torch
-from ray import air, tune
 from ray.tune.search import Searcher
-
-from agents import Agents
-from env import FantasticBits
-from ppo import Trainer
 
 
 def log_halving_search(*values):  # could be used for learning rate
@@ -163,8 +157,8 @@ class IntervalHalvingSearch(Searcher):
                 SearchNode({k: v for k, v in zip(self.keys, cfg)}, None, 0)
             )
 
-        self.best_configs = {}
-        self.best_scores = {}
+        self.best_config = {}
+        self.best_score = {}
         self.in_progress = {}
         self.all_deployed = set()
 
@@ -185,8 +179,8 @@ class IntervalHalvingSearch(Searcher):
             node
             for node in self.candidates
             if (
-                node.depth - 1 not in self.best_configs
-                or node.parent_config == self.best_configs[node.depth - 1]
+                node.depth - 1 not in self.best_config
+                or node.parent_config == self.best_config[node.depth - 1]
                 or node.parent_config
                 in [
                     n.config
@@ -234,18 +228,16 @@ class IntervalHalvingSearch(Searcher):
 
         node = self.in_progress[trial_id]
         if (
-            node.depth not in self.best_configs
+            node.depth not in self.best_config
             or (
-                self.mode == "max"
-                and result[self.metric] > self.best_scores[node.depth]
+                self.mode == "max" and result[self.metric] > self.best_score[node.depth]
             )
             or (
-                self.mode == "min"
-                and result[self.metric] < self.best_scores[node.depth]
+                self.mode == "min" and result[self.metric] < self.best_score[node.depth]
             )
         ):
-            self.best_scores[node.depth] = result[self.metric]
-            self.best_configs[node.depth] = node.config
+            self.best_score[node.depth] = result[self.metric]
+            self.best_config[node.depth] = node.config
 
             if node.depth < self.max_depth and not node.expanded:
                 node.expanded = True
@@ -357,6 +349,10 @@ class IndependentGroupsSearch(Searcher):
         node = self.in_progress[trial_id]
         node.parent.searcher.on_trial_complete(trial_id, result, error)
 
+        del self.in_progress[trial_id]
+        if error:
+            return
+
         score = result[self.metric]
         if node.deepest and (
             node.group - 1 not in self.best_score
@@ -369,110 +365,3 @@ class IndependentGroupsSearch(Searcher):
             self.best_config[node.group - 1] = node.parent_config
             if node.group < len(self.groups) and not node.expanded and node.deepest:
                 self.nodes.append(node)
-        del self.in_progress[trial_id]
-
-
-def train(config):
-    budget = 200 * 4096
-    iters = 1 + round(budget / config["rollout_steps"])
-    steps_per_report = 20 * 4096
-    iters_per_report = round(steps_per_report / config["rollout_steps"])
-
-    results = []
-    for run in range(3):
-        trainer = Trainer(
-            Agents(),
-            FantasticBits,
-            lr=config["lr"],
-            weight_decay=config["weight_decay"],
-            gamma=config["gamma"],
-            gae_lambda=config["gae_lambda"],
-            rollout_steps=config["rollout_steps"],
-            minibatch_size=config["minibatch_size"],
-            epochs=config["epochs"],
-            entropy_reg=config["entropy_reg"],
-            env_kwargs={
-                "bludgers_enabled": False,
-                "opponents_enabled": False,
-                "shape_snaffle_dist": True,
-            },
-        )
-
-        for i in range(iters):
-            trainer.train()
-            if i % iters_per_report == 0:
-                trainer.evaluate(num_episodes=100)
-                tune.report(
-                    **{k: v[-1] for k, v in trainer.logger.cumulative_data.items()}
-                )
-
-                torch.save(trainer.agents.state_dict(), f"./agents_{run}.pth")
-        results.append({k: v[-1] for k, v in trainer.logger.cumulative_data.items()})
-    tune.report(
-        **{
-            "mo3_" + k: (results[0][k] + results[1][k] + results[2][k]) / 3
-            for k in results[0].keys()
-        }
-    )
-
-
-def main():
-    import os
-
-    os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
-
-    search_alg = IndependentGroupsSearch(
-        search_space={
-            "lr": log_halving_search(1e-4, 1e-3, 1e-2),
-            "minibatch_size": q_log_halving_search(32, 128, 512),
-            "weight_decay": log_halving_search(1e-7, 1e-5, 1e-3),
-            "epochs": grid_search(1, 2, 3, 4, 5),
-            "gamma": grid_search(0.95, 0.97, 0.98, 0.99, 0.995),
-            "gae_lambda": grid_search(0.5, 0.8, 0.9, 0.95, 0.97),
-            "entropy_reg": log_halving_search(1e-7, 1e-5, 1e-3),
-            "rollout_steps": grid_search(1024, 2048, 4096, 8192),
-        },
-        depth=1,
-        defaults={
-            "lr": 1e-4,
-            "minibatch_size": 64,
-            "weight_decay": 1e-4,
-            "epochs": 3,
-            "gamma": 0.99,
-            "gae_lambda": 0.95,
-            "entropy_reg": 1e-5,
-            "rollout_steps": 4096,
-        },
-        groups=(
-            ("lr", "minibatch_size"),
-            ("weight_decay",),
-            ("epochs",),
-            ("gamma", "gae_lambda"),
-            ("entropy_reg",),
-            ("rollout_steps",),
-        ),
-        metric="mo3_eval_goals_scored_mean",
-        mode="max",
-    )
-
-    tuner = tune.Tuner(
-        train,
-        tune_config=tune.TuneConfig(
-            num_samples=-1,
-            search_alg=search_alg,
-            max_concurrent_trials=8,
-        ),
-        run_config=air.RunConfig(
-            name="full_tune_3",
-            local_dir="ray_results/",
-            verbose=1,
-        ),
-    )
-    tuner.fit()
-
-    print("best score:", search_alg.best_score)
-    print("best config:", search_alg.best_config)
-
-
-if __name__ == "__main__":
-    main()

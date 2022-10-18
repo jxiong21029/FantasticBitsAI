@@ -1,14 +1,19 @@
 import math
 import os
-import re
-import shutil
 from collections import defaultdict
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.signal
+import seaborn
 import torch
+from ray import tune
+from ray.air import session
+
+matplotlib.use("Tkagg")
+seaborn.set_theme()
 
 
 # adapted from SpinningUp PPO
@@ -60,47 +65,48 @@ class Logger:
             self.epoch_data[k].append(v)
 
     def step(self):
-        seen = {k: False for k in self.cumulative_data.keys()}
         for k, v in self.epoch_data.items():
             if len(v) == 1:
                 self.cumulative_data[k].append(v[0])
-                seen[k] = True
             elif isinstance(v[0], bool):
                 self.cumulative_data[k + "_prop"].append(np.mean(v, dtype=np.float32))
-                seen[k + "_prop"] = True
             else:
                 self.cumulative_data[k + "_mean"].append(np.mean(v))
-                seen[k + "_mean"] = True
                 self.cumulative_data[k + "_std"].append(np.std(v))
-                seen[k + "_std"] = True
-
-        maxlen = max(len(v) for v in self.cumulative_data.values())
-        for k, v in self.cumulative_data.items():
-            if len(v) < maxlen:
-                self.cumulative_data[k].append(np.nan)
 
         self.epoch_data.clear()
+
+    def update_from(self, other: "Logger"):
+        for k, v in other.cumulative_data.items():
+            self.cumulative_data[k].extend(v)
+
+    def tune_report(self):
+        tune.report(**{k: v[-1] for k, v in self.cumulative_data.items()})
+
+    def air_report(self, **kwargs):
+        session.report({k: v[-1] for k, v in self.cumulative_data.items()}, **kwargs)
 
     def to_df(self):
         return pd.DataFrame(self.cumulative_data)
 
-    def generate_plots(self, fname_prefix=None):
+    def generate_plots(self, dirname="plotgen"):
         if not self.cleared_previous:
-            folder = "plotgen/"
-            for filename in os.listdir(folder):
-                file_path = os.path.join(folder, filename)
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
+            if os.path.isdir(dirname):
+                for filename in os.listdir(dirname):
+                    file_path = os.path.join(dirname, filename)
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+            else:
+                os.mkdir(dirname)
             self.cleared_previous = True
-        x = np.arange(len(self.cumulative_data[list(self.cumulative_data.keys())[0]]))
 
         for k, v in self.cumulative_data.items():
             if k.endswith("_std"):
                 continue
 
             fig, ax = plt.subplots()
+
+            x = np.arange(len(self.cumulative_data[k]))
             v = np.array(v)
             if k.endswith("_mean"):
                 name = k[:-5]
@@ -114,12 +120,7 @@ class Logger:
                 name = k
                 ax.plot(x, v)
             fig.suptitle(name)
-            if fname_prefix is None:
-                fig.savefig(f"plotgen/{name}.png")
-            else:
-                if re.fullmatch("[a-zA-Z0-9]", fname_prefix[-1]):
-                    fname_prefix += "_"
-                fig.savefig(f"plotgen/{fname_prefix}{name}.png")
+            fig.savefig(os.path.join(dirname, name))
             plt.close(fig)
 
 
@@ -135,3 +136,30 @@ def grad_norm(module):
             ),
             2.0,
         ).item()
+
+
+def component_grad_norms(module, exclude=None):
+    total_norm = grad_norm(module)
+    component_norms = {}
+
+    names = set(name.split(".")[0] for name, _ in module.named_parameters())
+    for name in names:
+        if exclude is not None and name in exclude:
+            continue
+        component_norms[name] = grad_norm(module.__getattr__(name))
+
+    component_norms.update(total=total_norm)
+    return component_norms
+
+
+def profileit(func):
+    import cProfile
+
+    def wrapper(*args, **kwargs):
+        datafn = func.__name__ + ".profile"  # Name the data file sensibly
+        prof = cProfile.Profile()
+        retval = prof.runcall(func, *args, **kwargs)
+        prof.dump_stats(datafn)
+        return retval
+
+    return wrapper

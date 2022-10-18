@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from env import FantasticBits
+from env import FantasticBits, Snaffle, Wizard
 
 
 @pytest.fixture
@@ -88,3 +88,46 @@ def test_weird_goal_angle_collisions(null_action):
                 break
             assert 0 <= env.snaffles[0].x <= 16000
             assert 0 <= env.snaffles[0].y <= 7500
+
+
+def test_dist_reward(null_action):
+    env = FantasticBits(reward_shaping_snaffle_goal_dist=True)
+    env.reset()
+
+    env.snaffles = [snaffle := env.snaffles[0]]
+    snaffle.x = 2000
+    snaffle.vx = 500
+    snaffle.y = 3750
+    env.bludgers.clear()
+
+    _, rewards, _ = env.step(null_action)
+    assert rewards[0] == rewards[1] == 0.036
+
+
+def test_collision_detection():
+    rng = np.random.default_rng(0xBEEEF)
+    env = FantasticBits(seed=rng.integers(2**31))
+    for _ in range(10):
+        env.reset()
+        done = False
+        while not done:
+            _, _, done = env.step(
+                {
+                    "id": np.zeros(
+                        2,
+                    ),
+                    "target": rng.normal(size=(2, 2)),
+                }
+            )
+            entities = env.agents + env.opponents + env.bludgers + env.snaffles
+            for i, entity in enumerate(entities):
+                for other in entities[i + 1 :]:
+                    a = (1 if isinstance(entity, Snaffle) else 0) + (
+                        1 if isinstance(other, Snaffle) else 0
+                    )
+                    b = (1 if isinstance(entity, Wizard) else 0) + (
+                        1 if isinstance(other, Wizard) else 0
+                    )
+                    if a == 2 or a == b == 1:
+                        continue
+                    assert entity.distance(other) + 1 >= entity.rad + other.rad
