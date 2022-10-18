@@ -402,6 +402,72 @@ class VonMisesAgents(nn.Module):
 
         return actions, logps
 
+    def vectorized_step(self, obses):
+        size = len(obses)
+
+        actions = [
+            {
+                "id": np.zeros(2, dtype=np.int64),
+                "target": np.zeros((2, 2), dtype=np.float32),
+            }
+            for _ in range(size)
+        ]
+        logps = np.zeros((size, 2), dtype=np.float32)
+
+        stacked_obs = {
+            "global": torch.zeros((size, SZ_GLOBAL)),
+        }
+        for i in range(4):
+            stacked_obs[f"wizard{i}"] = torch.zeros(
+                (size, SZ_WIZARD), device=self.device
+            )
+        for i in range(7):
+            stacked_obs[f"snaffle{i}"] = torch.full(
+                (size, SZ_SNAFFLE), torch.nan, device=self.device
+            )
+        for i in range(2):
+            stacked_obs[f"bludger{i}"] = torch.zeros(
+                (size, SZ_BLUDGER), device=self.device
+            )
+
+        for i in range(size):
+            for k in stacked_obs.keys():
+                if k in obses[i]:
+                    stacked_obs[k][i] = torch.from_numpy(obses[i][k])
+
+        with torch.no_grad():
+            # S x B X 32
+            z = self.policy_encoder(stacked_obs, batch_idx=np.arange(size))
+            for b in range(size):
+                for i in range(2):
+                    embed = z[i + 1][b]
+
+                    if obses[b][f"wizard{i}"][5] == 1:  # throw available
+                        actions[b]["id"][i] = 1
+                        logits = self.throw_head(embed)
+                    else:
+                        actions[b]["id"][i] = 0
+                        logits = self.move_head(embed)
+
+                    x = logits[0]
+                    y = logits[1]
+                    angle = torch.atan2(y, x)
+                    concentration = F.softplus(logits[2]) + 1e-3
+                    distr = distributions.VonMises(
+                        angle, concentration, validate_args=False
+                    )
+
+                    action = distr.sample()
+                    logp = distr.log_prob(action)
+
+                    actions[b]["target"][i] = (
+                        torch.cos(action).item(),
+                        torch.sin(action).item(),
+                    )
+                    logps[b][i] = logp.sum().item()
+
+        return actions, logps
+
     def predict_value(self, obs, _actions):
         # We could use OTHER agent's action in the future, but for now we only use the
         # agent's own observation

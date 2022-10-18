@@ -11,7 +11,7 @@ from utils import RunningMoments, discount_cumsum, grad_norm
 
 
 # adapted from SpinningUp PPO
-class Buffer:
+class RolloutBuffer:
     """
     A buffer for storing trajectories experienced by the agents interacting
     with the environment, and using Generalized Advantage Estimation (GAE-Lambda)
@@ -165,13 +165,14 @@ class PPOTrainer(Trainer):
         self.optim = torch.optim.Adam(
             agents.parameters(), lr=lr, weight_decay=weight_decay
         )
-        self.buf = Buffer(
+        self.buf = RolloutBuffer(
             size=rollout_steps,
             gamma=gamma,
             lam=gae_lambda,
             logger=self.logger,
             device=train_device,
         )
+        self.rollout_steps = rollout_steps
         self.minibatch_size = minibatch_size
         self.epochs = epochs
 
@@ -193,9 +194,9 @@ class PPOTrainer(Trainer):
         return self._agents
 
     def collect_rollout(self):
+        self.agents.to(self.rollout_device)
+        self.agents.eval()
         with torch.no_grad():
-            self.agents.to(self.rollout_device)
-
             for t in range(self.buf.max_size):
                 action, logp = self.agents.step(self.env_obs)
                 next_obs, reward, done = self.env.step(action)
@@ -223,7 +224,8 @@ class PPOTrainer(Trainer):
                         np.arange(self.buf.ptr - self.buf.path_start_idx),
                     ).numpy()
                     self.buf.finish_path(value)
-                    self.env_obs = self.env.reset()
+                    if done:
+                        self.env_obs = self.env.reset()
 
         self.rollout = self.buf.get()
 
@@ -281,8 +283,9 @@ class PPOTrainer(Trainer):
     def train(self):
         self.collect_rollout()
         self.agents.to(self.train_device)
+        self.agents.train()
 
-        idx = np.arange(self.buf.max_size)
+        idx = np.arange(self.rollout_steps)
 
         # TODO architecture design: e.g. add relu, norm after preprocessors, restructure
         #  obs/action embeddings

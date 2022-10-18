@@ -124,6 +124,8 @@ class BCTrainer(Trainer):
         return self._agents
 
     def train(self):
+        self.train()
+
         idx = np.arange(self.demo_sz)
         self.rng.shuffle(idx)
 

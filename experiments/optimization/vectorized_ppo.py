@@ -3,8 +3,7 @@ import copy
 import numpy as np
 import torch
 
-from env import FantasticBits
-from ppo import PPOTrainer
+from ppo import PPOTrainer, RolloutBuffer
 
 
 class VectorizedPPOTrainer(PPOTrainer):
@@ -44,46 +43,109 @@ class VectorizedPPOTrainer(PPOTrainer):
             train_device=train_device,
             seed=seed,
         )
+        self.rollout_steps = rollout_steps
+        self.buf = [
+            RolloutBuffer(
+                size=rollout_steps // vectorized_envs,
+                gamma=gamma,
+                lam=gae_lambda,
+                logger=self.logger,
+                device=train_device,
+            )
+            for _ in range(vectorized_envs)
+        ]
         self.env = [copy.deepcopy(self.env) for _ in range(vectorized_envs)]
         self.env_obs = [env.reset() for env in self.env]
+        self.env_idx = 0
 
     def collect_rollout(self):
+        self.agents.to(self.rollout_device)
+        self.agents.eval()
         with torch.no_grad():
-            self.agents.to(self.rollout_device)
-
             actions, logps = None, None
-            for t in range(self.buf.max_size):
-                idx = t % len(self.env)
-                if idx == 0:
+            for t in range(self.rollout_steps):
+                if self.env_idx == 0:
                     actions, logps = self.agents.vectorized_step(self.env_obs)
-                next_obs, reward, done = self.env[idx].step(actions[idx])
-                self.buf.store(self.env_obs, action, reward, logp)
-                self.env_obs = next_obs
+                next_obs, reward, done = self.env[self.env_idx].step(
+                    actions[self.env_idx]
+                )
 
-                epoch_ended = t == self.buf.max_size - 1
+                buf = self.buf[self.env_idx]
+                buf.store(
+                    self.env_obs[self.env_idx],
+                    actions[self.env_idx],
+                    reward,
+                    logps[self.env_idx],
+                )
+                self.env_obs[self.env_idx] = next_obs
+
+                epoch_ended = t >= self.rollout_steps - len(self.env)
                 if epoch_ended or done:
                     if done:
                         value = (0, 0)
                     else:
-                        value = self.agents.predict_value(self.env_obs, None)
+                        value = self.agents.predict_value(
+                            self.env_obs[self.env_idx], None
+                        )
 
-                    self.buf.val_buf[
-                        self.buf.path_start_idx : self.buf.ptr
+                    buf.val_buf[
+                        buf.path_start_idx : buf.ptr
                     ] = self.agents.value_forward(
                         {
                             "obs": {
-                                k: torch.tensor(
-                                    v[self.buf.path_start_idx : self.buf.ptr]
-                                )
-                                for k, v in self.buf.obs_buf.items()
+                                k: torch.tensor(v[buf.path_start_idx : buf.ptr])
+                                for k, v in buf.obs_buf.items()
                             }
                         },
-                        np.arange(self.buf.ptr - self.buf.path_start_idx),
+                        np.arange(buf.ptr - buf.path_start_idx),
                     ).numpy()
-                    self.buf.finish_path(value)
-                    self.env_obs = self.env.reset()
+                    buf.finish_path(value)
 
-                    self.logger.log(rollout_ep_reward=curr_ep_reward)
-                    curr_ep_reward = 0
+                    if done:
+                        self.env_obs[self.env_idx] = self.env[self.env_idx].reset()
 
-        self.rollout = self.buf.get()
+                self.env_idx = (self.env_idx + 1) % len(self.env)
+
+        rollouts = [buf.get() for buf in self.buf]
+
+        def rcat(objs):
+            ret = {}
+            for k in objs[0].keys():
+                if isinstance(objs[0][k], dict):
+                    ret[k] = rcat([obj[k] for obj in objs])
+                else:
+                    ret[k] = torch.cat([obj[k] for obj in objs], dim=0)
+            return ret
+
+        self.rollout = rcat(rollouts)
+
+
+def main():
+    import tqdm
+
+    from architectures import VonMisesAgents
+
+    trainer = VectorizedPPOTrainer(
+        VonMisesAgents(),
+        rollout_steps=4096,
+        lr=10**-3.5,
+        weight_decay=1e-4,
+        minibatch_size=512,
+        gae_lambda=0.975,
+        epochs=3,
+        env_kwargs={
+            "reward_shaping_snaffle_goal_dist": True,
+            "reward_own_goal": 3,
+        },
+        vectorized_envs=8,
+    )
+
+    for i in tqdm.trange(101):
+        trainer.train()
+        if i % 20 == 0:
+            trainer.evaluate()
+            trainer.logger.generate_plots()
+
+
+if __name__ == "__main__":
+    main()

@@ -6,7 +6,6 @@ import tqdm
 
 # from architectures import VonMisesAgents
 from env import FantasticBits
-
 from experiments.distillation.repr_distill import ReDistillAgents
 
 path = "experiments/ray_results/repr_distill_pbt_3/train_1aab4_00011_11_2022-10-17_03-48-36/checkpoint_000036/state.pt"

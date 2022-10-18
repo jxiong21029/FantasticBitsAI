@@ -222,6 +222,7 @@ class JointReDistillTrainer(PPOTrainer):
 
     def train(self):
         self.collect_rollout()
+        self.train()
 
         idx = np.arange(self.buf.max_size)
         for _ in range(self.epochs):
