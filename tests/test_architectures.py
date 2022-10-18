@@ -50,7 +50,9 @@ def test_permutation_invariance_von_mises():
         assert torch.isclose(logp1, logp2).all()
         for i in range(2):
             assert torch.isclose(distrs1[i].mean, distrs2[i].mean).all()
-            assert torch.isclose(distrs1[i].scale, distrs2[i].scale).all()
+            assert torch.isclose(
+                distrs1[i].concentration, distrs2[i].concentration
+            ).all()
 
         rollout_cpy["obs"]["snaffle0"] = trainer.rollout["obs"]["snaffle1"]
         rollout_cpy["obs"]["snaffle1"] = trainer.rollout["obs"]["snaffle0"]
@@ -64,4 +66,6 @@ def test_permutation_invariance_von_mises():
         assert torch.isclose(logp1, logp3).all(), f"{logp1[:5]} {logp3[:5]}"
         for i in range(2):
             assert torch.isclose(distrs1[i].mean, distrs3[i].mean).all()
-            assert torch.isclose(distrs1[i].scale, distrs3[i].scale).all()
+            assert torch.isclose(
+                distrs1[i].concentration, distrs3[i].concentration
+            ).all()

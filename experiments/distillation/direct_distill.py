@@ -53,7 +53,7 @@ class DirectDistillationTrainer(PPOTrainer):
         self.collect_rollout()
         self.train()
 
-        idx = np.arange(self.buf.max_size)
+        idx = np.arange(self.rollout_steps)
 
         for _ in range(self.epochs):
             self.rng.shuffle(idx)

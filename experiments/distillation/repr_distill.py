@@ -123,7 +123,7 @@ class PhasicReDistillTrainer(PPOTrainer):
 
         frozen_agents = copy.deepcopy(self.agents)
 
-        idx = np.arange(self.buf.max_size)
+        idx = np.arange(self.rollout_steps)
         self.rng.shuffle(idx)
 
         for i in range(idx.shape[0] // self.minibatch_size):
@@ -224,7 +224,7 @@ class JointReDistillTrainer(PPOTrainer):
         self.collect_rollout()
         self.train()
 
-        idx = np.arange(self.buf.max_size)
+        idx = np.arange(self.rollout_steps)
         for _ in range(self.epochs):
             self.rng.shuffle(idx)
             for i in range(idx.shape[0] // self.minibatch_size):

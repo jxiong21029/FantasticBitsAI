@@ -113,6 +113,8 @@ class RolloutBuffer:
         advantages appropriately normalized (shifted to have mean zero and std one).
         Also, resets some pointers in the buffer.
         """
+        assert self.ptr == self.max_size
+
         self.ptr = 0
         self.path_start_idx = 0
 
@@ -144,12 +146,13 @@ class PPOTrainer(Trainer):
         self,
         agents,
         env_kwargs=None,
+        gamma=0.99,
+        gae_lambda=0.95,
         lr=1e-3,
         weight_decay=1e-4,
         rollout_steps=4096,
-        gamma=0.99,
-        gae_lambda=0.95,
         minibatch_size=64,
+        vectorized_envs=8,
         epochs=3,
         ppo_clip_coeff=0.2,
         grad_clipping=10.0,
@@ -165,13 +168,16 @@ class PPOTrainer(Trainer):
         self.optim = torch.optim.Adam(
             agents.parameters(), lr=lr, weight_decay=weight_decay
         )
-        self.buf = RolloutBuffer(
-            size=rollout_steps,
-            gamma=gamma,
-            lam=gae_lambda,
-            logger=self.logger,
-            device=train_device,
-        )
+        self.bufs = [
+            RolloutBuffer(
+                size=rollout_steps // vectorized_envs,
+                gamma=gamma,
+                lam=gae_lambda,
+                logger=self.logger,
+                device=train_device,
+            )
+            for _ in range(vectorized_envs)
+        ]
         self.rollout_steps = rollout_steps
         self.minibatch_size = minibatch_size
         self.epochs = epochs
@@ -183,9 +189,13 @@ class PPOTrainer(Trainer):
         if env_kwargs is None:
             env_kwargs = {}
         env_kwargs["reward_gamma"] = gamma
-        self.env = FantasticBits(**env_kwargs, logger=self.logger)
         self.env_kwargs = env_kwargs
-        self.env_obs = self.env.reset()
+        self.envs = [
+            FantasticBits(**env_kwargs, logger=self.logger)
+            for _ in range(vectorized_envs)
+        ]
+        self.env_obs = [env.reset() for env in self.envs]
+        self.env_idx = 0
 
         self.rollout = None
 
@@ -197,37 +207,60 @@ class PPOTrainer(Trainer):
         self.agents.to(self.rollout_device)
         self.agents.eval()
         with torch.no_grad():
-            for t in range(self.buf.max_size):
-                action, logp = self.agents.step(self.env_obs)
-                next_obs, reward, done = self.env.step(action)
-                self.buf.store(self.env_obs, action, reward, logp)
-                self.env_obs = next_obs
+            actions, logps = None, None
+            for t in range(self.rollout_steps):
+                if self.env_idx == 0:
+                    actions, logps = self.agents.vectorized_step(self.env_obs)
+                next_obs, reward, done = self.envs[self.env_idx].step(
+                    actions[self.env_idx]
+                )
 
-                epoch_ended = t == self.buf.max_size - 1
+                buf = self.bufs[self.env_idx]
+                buf.store(
+                    self.env_obs[self.env_idx],
+                    actions[self.env_idx],
+                    reward,
+                    logps[self.env_idx],
+                )
+                self.env_obs[self.env_idx] = next_obs
+
+                epoch_ended = t >= self.rollout_steps - len(self.envs)
                 if epoch_ended or done:
                     if done:
                         value = (0, 0)
                     else:
-                        value = self.agents.predict_value(self.env_obs, None)
+                        value = self.agents.predict_value(
+                            self.env_obs[self.env_idx], None
+                        )
 
-                    self.buf.val_buf[
-                        self.buf.path_start_idx : self.buf.ptr
+                    buf.val_buf[
+                        buf.path_start_idx : buf.ptr
                     ] = self.agents.value_forward(
                         {
                             "obs": {
-                                k: torch.tensor(
-                                    v[self.buf.path_start_idx : self.buf.ptr]
-                                )
-                                for k, v in self.buf.obs_buf.items()
+                                k: torch.tensor(v[buf.path_start_idx : buf.ptr])
+                                for k, v in buf.obs_buf.items()
                             }
                         },
-                        np.arange(self.buf.ptr - self.buf.path_start_idx),
+                        np.arange(buf.ptr - buf.path_start_idx),
                     ).numpy()
-                    self.buf.finish_path(value)
-                    if done:
-                        self.env_obs = self.env.reset()
+                    buf.finish_path(value)
 
-        self.rollout = self.buf.get()
+                    if done:
+                        self.env_obs[self.env_idx] = self.envs[self.env_idx].reset()
+
+                self.env_idx = (self.env_idx + 1) % len(self.envs)
+
+        def rcat(objs):
+            ret = {}
+            for k in objs[0].keys():
+                if isinstance(objs[0][k], dict):
+                    ret[k] = rcat([obj[k] for obj in objs])
+                else:
+                    ret[k] = torch.cat([obj[k] for obj in objs], dim=0)
+            return ret
+
+        self.rollout = rcat([buf.get() for buf in self.bufs])
 
     def ppo_loss(self, batch_idx, logp, distrs):
         logp_old = self.rollout["logp"][batch_idx]
