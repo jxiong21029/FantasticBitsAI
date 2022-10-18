@@ -6,11 +6,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import scipy.signal
 import seaborn
 import torch
 from ray import tune
 from ray.air import session
+from scipy.signal import lfilter
 
 matplotlib.use("Tkagg")
 seaborn.set_theme()
@@ -18,7 +18,7 @@ seaborn.set_theme()
 
 # adapted from SpinningUp PPO
 def discount_cumsum(x, discount):
-    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+    return lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 
 class RunningMoments:
