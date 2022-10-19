@@ -8,25 +8,34 @@ from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.sample import Domain
 
-from architectures import VonMisesAgents
-from experiments.distillation.direct_distill import DirectDistillationTrainer
+from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
 
 
 def train(config):
-    agents = VonMisesAgents(num_layers=2, d_model=64, nhead=2, dim_feedforward=128)
-    trainer = DirectDistillationTrainer(
+    agents = ReDistillAgents(
+        num_layers=2, d_model=64, nhead=2, dim_feedforward=128, share_parameters=True
+    )
+
+    trainer = JointReDistillTrainer(
         agents,
-        ckpt_filename="../../../../bc_agents.pth",
+        demo_filename="../../../../data/basic_demo.pickle",
         lr=config["lr"],
-        gae_lambda=0.975,
-        minibatch_size=config["minibatch_size"],
-        weight_decay=config["weight_decay"],
-        epochs=config["epochs"],
-        beta_kl=config["beta_kl"],
+        gamma=1 - config.get("1-gamma", 0.01),
+        gae_lambda=1 - config.get("1-gae_lambda", 0.03),
+        weight_decay=config.get("weight_decay", 1e-5),
+        rollout_steps=4096,
+        minibatch_size=512,
+        epochs=config.get("epochs", 3),
+        ppo_clip_coeff=config["ppo_clip_coeff"],
+        grad_clipping=10.0,
+        entropy_reg=config["entropy_reg"],
+        value_loss_wt=config["value_loss_wt"],
+        beta_bc=config["beta_bc"],
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": 3.0,
-            "reward_teammate_goal": 0.0,
+            "reward_own_goal": 2,
+            "reward_teammate_goal": 2,
+            "reward_opponent_goal": -2,
         },
     )
 
@@ -42,9 +51,9 @@ def train(config):
 
     while True:
         trainer.train_epoch()
-        if step % 25 == 0:
-            trainer.evaluate()
 
+        new_checkpoint = None
+        if step % 25 == 24:
             os.makedirs("checkpoint", exist_ok=True)
             torch.save(
                 {
@@ -55,17 +64,21 @@ def train(config):
                 "checkpoint/state.pt",
             )
             new_checkpoint = air.Checkpoint.from_directory("checkpoint")
+
+        if step % 50 == 49:
+            trainer.vectorized_evaluate(num_episodes=100)
             trainer.logger.air_report(checkpoint=new_checkpoint)
+
         step += 1
 
 
 def main():
     param_space = {
-        "lr": tune.loguniform(10**-4, 10**-2.5),
-        "minibatch_size": [256, 512, 1024],
-        "weight_decay": tune.loguniform(10**-6, 10**-3),
-        "epochs": [1, 2, 3],
-        "beta_kl": tune.loguniform(10**-2.5, 1),
+        "lr": tune.loguniform(10**-4, 10**-3),
+        "beta_bc": tune.loguniform(10**-2.5, 1),
+        "entropy_reg": tune.loguniform(10**-6, 10**-4),
+        "ppo_clip_coeff": tune.uniform(0.05, 0.25),
+        "value_loss_wt": tune.loguniform(1e-2, 1e2),
     }
 
     resample_prob = 0.25
@@ -97,7 +110,7 @@ def main():
         time_attr="training_iteration",
         metric="eval_goals_scored_mean",
         mode="max",
-        perturbation_interval=2,
+        perturbation_interval=1,
         hyperparam_mutations=param_space,
     )
     pbt._get_new_config = custom_get_new_config
@@ -106,12 +119,11 @@ def main():
         train,
         tune_config=tune.TuneConfig(
             scheduler=pbt,
-            num_samples=-1,
-            max_concurrent_trials=8,
+            num_samples=12,
             time_budget_s=3600 * 12,
         ),
         run_config=air.RunConfig(
-            name="direct_distill_pbt",
+            name="ps_redistill_pbt_2",
             local_dir="../ray_results",
         ),
     )

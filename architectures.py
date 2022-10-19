@@ -5,6 +5,7 @@ import torch
 import torch.distributions as distributions
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import i0
 from torch.distributions import VonMises, register_kl
 
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD
@@ -168,7 +169,7 @@ class GaussianAgents(nn.Module):
                     logits = self.move_head(embed)
 
                 mu = logits[:2]
-                if self.norm_action_mean == "normed_euclidean":
+                if self.norm_action_mean:
                     mu = mu / torch.norm(mu)
                 sigma = F.softplus(
                     logits[2:] + self._std_offset.to(device=logits.device)
@@ -180,6 +181,70 @@ class GaussianAgents(nn.Module):
 
                 actions["target"][i] = action.cpu().numpy()
                 logps[i] = logp.sum().item()
+
+        return actions, logps
+
+    def vectorized_step(self, obses):
+        size = len(obses)
+
+        actions = [
+            {
+                "id": np.zeros(2, dtype=np.int64),
+                "target": np.zeros((2, 2), dtype=np.float32),
+            }
+            for _ in range(size)
+        ]
+        logps = np.zeros((size, 2), dtype=np.float32)
+
+        stacked_obs = {
+            "global": torch.zeros((size, SZ_GLOBAL)),
+        }
+        for i in range(4):
+            stacked_obs[f"wizard{i}"] = torch.zeros(
+                (size, SZ_WIZARD), device=self.device
+            )
+        for i in range(7):
+            stacked_obs[f"snaffle{i}"] = torch.full(
+                (size, SZ_SNAFFLE), torch.nan, device=self.device
+            )
+        for i in range(2):
+            stacked_obs[f"bludger{i}"] = torch.zeros(
+                (size, SZ_BLUDGER), device=self.device
+            )
+
+        for i in range(size):
+            for k in stacked_obs.keys():
+                if k in obses[i]:
+                    stacked_obs[k][i] = torch.from_numpy(obses[i][k])
+
+        with torch.no_grad():
+            # S x B X 32
+            z = self.policy_encoder(stacked_obs, batch_idx=np.arange(size))
+            for b in range(size):
+                for i in range(2):
+                    assert z[i + 1].shape[0] == size  # TODO remove
+                    embed = z[i + 1][b]
+
+                    if obses[b][f"wizard{i}"][5] == 1:  # throw available
+                        actions[b]["id"][i] = 1
+                        logits = self.throw_head(embed)
+                    else:
+                        actions[b]["id"][i] = 0
+                        logits = self.move_head(embed)
+
+                    mu = logits[:2]
+                    if self.norm_action_mean:
+                        mu = mu / torch.norm(mu)
+                    sigma = F.softplus(
+                        logits[2:] + self._std_offset.to(device=logits.device)
+                    )
+                    distr = distributions.Normal(mu, sigma, validate_args=False)
+
+                    action = distr.sample()
+                    logp = distr.log_prob(action)
+
+                    actions[b]["target"][i] = action.cpu().numpy()
+                    logps[b][i] = logp.sum().item()
 
         return actions, logps
 
@@ -246,6 +311,13 @@ VonMises.entropy = (
 )
 
 
+VonMises.log_prob = lambda self, value: (
+    self.concentration * torch.cos(value - self.loc)
+    - 1.83787706641
+    - torch.log(i0(self.concentration))
+)
+
+
 @register_kl(VonMises, VonMises)
 def kl_vonmises_vonmises(p, q):
     i0e_concentration1 = torch.special.i0e(p.concentration)
@@ -268,9 +340,11 @@ class VonMisesAgents(nn.Module):
         dim_feedforward=64,
         dropout=0,
         flip_augment=True,
+        share_parameters=False,
     ):
         super().__init__()
         self.flip_augment = flip_augment
+        self.share_parameters = share_parameters
 
         self.policy_encoder = Encoder(
             num_layers=num_layers,
@@ -279,13 +353,14 @@ class VonMisesAgents(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
         )
-        self.value_encoder = Encoder(
-            num_layers=num_layers,
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-        )
+        if not share_parameters:
+            self.value_encoder = Encoder(
+                num_layers=num_layers,
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+            )
 
         self.move_head = nn.Linear(d_model, 3)
         self.throw_head = nn.Linear(d_model, 3)
@@ -409,7 +484,10 @@ class VonMisesAgents(nn.Module):
         # agent's own observation
         values = np.zeros(2, dtype=np.float32)
         with torch.no_grad():
-            z = self.value_encoder(obs)  # S x 32
+            if self.share_parameters:
+                z = self.policy_encoder(obs)
+            else:
+                z = self.value_encoder(obs)  # S x 32
 
         for i in range(2):
             embed = z[i + 1]  # index 0 is global embedding, 1 is agent 0, 2 is agent 1
@@ -449,7 +527,10 @@ class VonMisesAgents(nn.Module):
 
     def value_forward(self, rollout, batch_idx):
         # S x B x 32
-        z = self.value_encoder(rollout["obs"], batch_idx, self.flip_augment)
+        if self.share_parameters:
+            z = self.policy_encoder(rollout["obs"], batch_idx, self.flip_augment)
+        else:
+            z = self.value_encoder(rollout["obs"], batch_idx, self.flip_augment)
         ret = torch.zeros((batch_idx.shape[0], 2), device=self.device)
         for i in range(2):
             embed = z[i + 1]  # B x 32

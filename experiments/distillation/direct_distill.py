@@ -13,47 +13,21 @@ from utils import component_grad_norms
 class DirectDistillationTrainer(PPOTrainer):
     def __init__(
         self,
-        agents: VonMisesAgents,
-        ckpt_filename: str,
-        env_kwargs=None,
-        lr=1e-3,
-        weight_decay=1e-4,
-        rollout_steps=4096,
-        gamma=0.99,
-        gae_lambda=0.95,
-        minibatch_size=64,
-        epochs=3,
-        ppo_clip_coeff=0.2,
-        grad_clipping=10.0,
-        entropy_reg=1e-5,
+        ckpt_filename,
         beta_kl=1.0,
-        seed=None,
+        **kwargs,
     ):
-        super().__init__(
-            agents=agents,
-            env_kwargs=env_kwargs,
-            lr=lr,
-            weight_decay=weight_decay,
-            rollout_steps=rollout_steps,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            minibatch_size=minibatch_size,
-            epochs=epochs,
-            ppo_clip_coeff=ppo_clip_coeff,
-            grad_clipping=grad_clipping,
-            entropy_reg=entropy_reg,
-            seed=seed,
-        )
+        super().__init__(**kwargs)
         self.beta_kl = beta_kl
 
-        self.frozen_agents = copy.deepcopy(agents)
+        self.frozen_agents = copy.deepcopy(self.agents)
         self.frozen_agents.load_state_dict(torch.load(ckpt_filename))
 
-    def train(self):
+    def train_epoch(self):
         self.collect_rollout()
-        self.train()
+        self.agents.train()
 
-        idx = np.arange(self.buf.max_size)
+        idx = np.arange(self.rollout_steps)
 
         for _ in range(self.epochs):
             self.rng.shuffle(idx)
@@ -118,7 +92,7 @@ def main():
         },
     )
     for i in tqdm.trange(501):
-        trainer.train()
+        trainer.train_epoch()
         if i % 20 == 0:
             trainer.evaluate()
             trainer.logger.generate_plots("plotgen_direct")
