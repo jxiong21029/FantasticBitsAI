@@ -145,18 +145,19 @@ class PPOTrainer(Trainer):
     def __init__(
         self,
         agents,
-        env_kwargs=None,
         gamma=0.99,
-        gae_lambda=0.95,
-        lr=1e-3,
-        weight_decay=1e-4,
+        gae_lambda=0.97,
+        lr=1e-4,
+        weight_decay=1e-5,
         rollout_steps=4096,
-        minibatch_size=64,
-        vectorized_envs=8,
+        minibatch_size=512,
         epochs=3,
         ppo_clip_coeff=0.2,
         grad_clipping=10.0,
-        entropy_reg=1e-5,
+        entropy_reg=1e-6,
+        value_loss_wt=1.0,
+        env_kwargs=None,
+        vectorized_envs=8,
         rollout_device=torch.device("cpu"),
         train_device=torch.device("cpu"),
         seed=None,
@@ -185,6 +186,7 @@ class PPOTrainer(Trainer):
         self.ppo_clip_coeff = ppo_clip_coeff
         self.grad_clipping = grad_clipping
         self.entropy_reg = entropy_reg
+        self.value_loss_wt = value_loss_wt
 
         if env_kwargs is None:
             env_kwargs = {}
@@ -277,7 +279,7 @@ class PPOTrainer(Trainer):
         v_pred = self.agents.value_forward(self.rollout, batch_idx)
         loss_v = ((v_pred - self.rollout["ret"][batch_idx]) ** 2).mean()
 
-        total_loss = loss_pi + loss_v
+        total_loss = loss_pi + self.value_loss_wt * loss_v
 
         total_entropy = 0
         if self.entropy_reg > 0:
@@ -313,7 +315,7 @@ class PPOTrainer(Trainer):
         )
         return total_loss
 
-    def train(self):
+    def train_epoch(self):
         self.collect_rollout()
         self.agents.to(self.train_device)
         self.agents.train()
@@ -356,9 +358,13 @@ class PPOTrainer(Trainer):
 
         self.logger.step()
 
-    def evaluate(self, num_episodes=50):
+    def evaluate(self, *args, **kwargs):
         self.agents.to(self.rollout_device)
-        super().evaluate(num_episodes=50)
+        super().evaluate(*args, **kwargs)
+
+    def vectorized_evaluate(self, *args, **kwargs):
+        self.agents.to(self.rollout_device)
+        super().vectorized_evaluate(*args, **kwargs)
 
     def evaluate_with_render(self):
         self.agents.to(self.rollout_device)
@@ -368,20 +374,24 @@ class PPOTrainer(Trainer):
 def main():
     trainer = PPOTrainer(
         VonMisesAgents(),
-        rollout_steps=4096,
         lr=10**-3.5,
-        weight_decay=1e-4,
+        gamma=0.99,
+        gae_lambda=0.98,
+        weight_decay=1e-5,
+        rollout_steps=4096,
         minibatch_size=512,
-        gae_lambda=0.975,
         epochs=3,
+        ppo_clip_coeff=0.1,
+        grad_clipping=10.0,
+        entropy_reg=1e-6,
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
             "reward_own_goal": 3,
         },
     )
-    for i in tqdm.trange(501):
-        trainer.train()
-        if i % 20 == 0:
+    for i in tqdm.trange(500):
+        trainer.train_epoch()
+        if i % 20 == 19:
             trainer.evaluate()
             trainer.logger.generate_plots()
 

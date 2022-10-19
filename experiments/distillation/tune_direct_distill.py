@@ -38,7 +38,7 @@ def train(config):
         end_beta = config["end_beta_prop"] * start_beta
         for i in range(201):
             trainer.beta_kl = start_beta + (end_beta - start_beta) * i / 200
-            trainer.train()
+            trainer.train_epoch()
             if i % 20 == 0:
                 trainer.evaluate()
                 trainer.logger.tune_report()

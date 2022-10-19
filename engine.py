@@ -270,6 +270,7 @@ class Snaffle(Entity):
         for pole in POLES:
             if col := self.collision(pole):
                 yield col
+                break  # (rarely incorrect) assumption: can only run into one pole
 
         endx = self.x + self.vx
         if (

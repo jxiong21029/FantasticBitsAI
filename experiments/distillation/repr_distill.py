@@ -15,16 +15,12 @@ from utils import Logger, component_grad_norms
 class ReDistillAgents(VonMisesAgents):
     def __init__(
         self,
-        num_layers=1,
         d_model=32,
-        nhead=2,
-        dim_feedforward=64,
+        **kwargs,
     ):
         super().__init__(
-            num_layers=num_layers,
             d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
+            **kwargs,
         )
         self.move_head_2 = nn.Linear(d_model, 3)
         self.throw_head_2 = nn.Linear(d_model, 3)
@@ -63,39 +59,8 @@ class ReDistillAgents(VonMisesAgents):
 
 
 class PhasicReDistillTrainer(PPOTrainer):
-    def __init__(
-        self,
-        agents: ReDistillAgents,
-        demo_filename,
-        env_kwargs=None,
-        lr=1e-3,
-        weight_decay=1e-4,
-        rollout_steps=4096,
-        gamma=0.99,
-        gae_lambda=0.95,
-        minibatch_size=64,
-        epochs=3,
-        ppo_clip_coeff=0.2,
-        grad_clipping=10.0,
-        entropy_reg=1e-5,
-        beta_kl=1.0,
-        seed=None,
-    ):
-        super().__init__(
-            agents=agents,
-            env_kwargs=env_kwargs,
-            lr=lr,
-            weight_decay=weight_decay,
-            rollout_steps=rollout_steps,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            minibatch_size=minibatch_size,
-            epochs=epochs,
-            ppo_clip_coeff=ppo_clip_coeff,
-            grad_clipping=grad_clipping,
-            entropy_reg=entropy_reg,
-            seed=seed,
-        )
+    def __init__(self, lr, weight_decay, demo_filename, beta_kl=1.0, **kwargs):
+        super().__init__(**kwargs)
         self.beta_kl = beta_kl
 
         with open(demo_filename, "rb") as f:
@@ -117,8 +82,8 @@ class PhasicReDistillTrainer(PPOTrainer):
             self.agents.parameters(), lr=lr, weight_decay=weight_decay
         )
 
-    def train(self):
-        super().train()
+    def train_epoch(self):
+        super().train_epoch()
         phase2_logger = Logger()
 
         frozen_agents = copy.deepcopy(self.agents)
@@ -172,36 +137,12 @@ class PhasicReDistillTrainer(PPOTrainer):
 class JointReDistillTrainer(PPOTrainer):
     def __init__(
         self,
-        agents: ReDistillAgents,
         demo_filename,
-        env_kwargs=None,
-        lr=1e-3,
-        weight_decay=1e-4,
-        rollout_steps=4096,
-        gamma=0.99,
-        gae_lambda=0.95,
-        minibatch_size=64,
-        epochs=3,
-        ppo_clip_coeff=0.2,
-        grad_clipping=10.0,
-        entropy_reg=1e-5,
         beta_bc=1.0,
-        seed=None,
+        **kwargs,
     ):
         super().__init__(
-            agents=agents,
-            env_kwargs=env_kwargs,
-            lr=lr,
-            weight_decay=weight_decay,
-            rollout_steps=rollout_steps,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            minibatch_size=minibatch_size,
-            epochs=epochs,
-            ppo_clip_coeff=ppo_clip_coeff,
-            grad_clipping=grad_clipping,
-            entropy_reg=entropy_reg,
-            seed=seed,
+            **kwargs,
         )
         self.beta_bc = beta_bc
 
@@ -220,9 +161,62 @@ class JointReDistillTrainer(PPOTrainer):
         self.rng.shuffle(self.demo_idx)
         self.ptr = 0
 
-    def train(self):
+    def pretrain_policy(self, lr, weight_decay, epochs=50, logger=None):
+        temp_optim = torch.optim.Adam(
+            self.agents.parameters(), lr=lr, weight_decay=weight_decay
+        )
+
+        for _ in range(epochs):
+            self.rng.shuffle(self.demo_idx)
+            for i in range(self.demo_idx.shape[0] // self.minibatch_size):
+                demo_idx = self.demo_idx[
+                    i * self.minibatch_size : (i + 1) * self.minibatch_size
+                ]
+
+                bc_logp_1, _ = self.agents.policy_forward(self.demo, demo_idx)
+                bc_logp_2, _ = self.agents.policy_forward_2(self.demo, demo_idx)
+
+                total_loss = -bc_logp_1 - bc_logp_2
+
+                temp_optim.zero_grad(set_to_none=True)
+                total_loss.backward()
+                temp_optim.step()
+
+                if logger is not None:
+                    logger.log(bc_pretrain_loss=total_loss.item())
+            if logger is not None:
+                logger.step()
+
+    def pretrain_value(self, lr, weight_decay, epochs=50, sample_reuse=3, logger=None):
+        temp_optim = torch.optim.Adam(
+            self.agents.parameters(), lr=lr, weight_decay=weight_decay
+        )
+
+        idx = np.arange(self.rollout_steps)
+        for _ in range(epochs):
+            self.collect_rollout()
+
+            for _ in range(sample_reuse):
+                self.rng.shuffle(idx)
+
+                for i in range(idx.shape[0] // self.minibatch_size):
+                    batch_idx = idx[
+                        i * self.minibatch_size : (i + 1) * self.minibatch_size
+                    ]
+                    v_pred = self.agents.value_forward(self.rollout, batch_idx)
+                    loss_v = ((v_pred - self.rollout["ret"][batch_idx]) ** 2).mean()
+
+                    temp_optim.zero_grad(set_to_none=True)
+                    loss_v.backward()
+                    temp_optim.step()
+                    if logger is not None:
+                        logger.log(bc_pretrain_loss=loss_v.item())
+            if logger is not None:
+                logger.step()
+
+    def train_epoch(self):
         self.collect_rollout()
-        self.train()
+        self.agents.train()
 
         idx = np.arange(self.rollout_steps)
         for _ in range(self.epochs):
@@ -289,7 +283,7 @@ def main():
         beta_bc=1e-1,
     )
     for i in tqdm.trange(201):
-        trainer.train()
+        trainer.train_epoch()
         if i % 20 == 0:
             trainer.evaluate()
             trainer.logger.generate_plots()

@@ -44,7 +44,7 @@ def train(config):
         step = 0
 
     while True:
-        trainer.train()
+        trainer.train_epoch()
         if step % 25 == 0:
             trainer.evaluate()
 

@@ -32,7 +32,7 @@ def train(config):
             },
         )
         for i in range(201):
-            trainer.train()
+            trainer.train_epoch()
             if i % 20 == 0:
                 trainer.evaluate()
                 trainer.logger.tune_report()

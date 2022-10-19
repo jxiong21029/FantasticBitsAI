@@ -123,8 +123,8 @@ class BCTrainer(Trainer):
     def agents(self):
         return self._agents
 
-    def train(self):
-        self.train()
+    def train_epoch(self):
+        self.agents.train()
 
         idx = np.arange(self.demo_sz)
         self.rng.shuffle(idx)
@@ -167,7 +167,7 @@ def main():
     )
     trainer.evaluate()
     for i in tqdm.trange(100):
-        trainer.train()
+        trainer.train_epoch()
         if i % 20 == 19:
             trainer.evaluate()
             trainer.logger.generate_plots(dirname="plotgen_bc/")

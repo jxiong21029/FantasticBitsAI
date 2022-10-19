@@ -19,7 +19,7 @@ class Trainer(ABC):
         pass
 
     @abstractmethod
-    def train(self):
+    def train_epoch(self):
         pass
 
     def evaluate(self, num_episodes=50):
@@ -35,6 +35,29 @@ class Trainer(ABC):
                     actions, _ = self.agents.step(obs)
                 obs, _, done = eval_env.step(actions)
         temp_logger.step()
+
+        for k, v in temp_logger.cumulative_data.items():
+            self.logger.cumulative_data["eval_" + k].extend(v)
+
+    def vectorized_evaluate(self, num_episodes=50, num_envs=8):
+        self.agents.eval()
+
+        num_envs = min(num_envs, num_episodes)
+        temp_logger = Logger()
+        eval_envs = [
+            FantasticBits(**self.env_kwargs, logger=temp_logger)
+            for _ in range(num_envs)
+        ]
+        total_done = 0
+        obses = [env.reset() for env in eval_envs]
+        while total_done < num_episodes:
+            with torch.no_grad():
+                actions, _ = self.agents.vectorized_step(obses)
+            for i, env in enumerate(eval_envs):
+                obses[i], _, done = env.step(actions[i])
+                if done:
+                    obses[i] = env.reset()
+                    total_done += 1
 
         for k, v in temp_logger.cumulative_data.items():
             self.logger.cumulative_data["eval_" + k].extend(v)
