@@ -367,13 +367,13 @@ class PPOTrainer(Trainer):
 
         self.logger.step()
 
-    def evaluate(self, *args, **kwargs):
+    def evaluate(self, num_episodes=50):
         self.agents.to(self.rollout_device)
-        super().evaluate(*args, **kwargs)
+        super().evaluate(num_episodes)
 
-    def vectorized_evaluate(self, *args, **kwargs):
+    def vectorized_evaluate(self, num_episodes=50, num_envs=8):
         self.agents.to(self.rollout_device)
-        super().vectorized_evaluate(*args, **kwargs)
+        super().vectorized_evaluate(num_episodes, num_envs)
 
     def evaluate_with_render(self):
         self.agents.to(self.rollout_device)

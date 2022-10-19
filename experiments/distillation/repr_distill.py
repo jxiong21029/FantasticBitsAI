@@ -6,6 +6,7 @@ import torch
 import torch.distributions as distributions
 import torch.nn as nn
 import torch.nn.functional as F
+import tqdm
 
 from architectures import VonMisesAgents
 from ppo import PPOConfig, PPOTrainer
@@ -162,12 +163,16 @@ class JointReDistillTrainer(PPOTrainer):
         self.rng.shuffle(self.demo_idx)
         self.ptr = 0
 
-    def pretrain_policy(self, lr, weight_decay, epochs=50, logger=None):
+    def pretrain_policy(self, lr, weight_decay, epochs=50, logger=None, verbose=False):
         temp_optim = torch.optim.Adam(
             self.agents.parameters(), lr=lr, weight_decay=weight_decay
         )
 
-        for _ in range(epochs):
+        if verbose:
+            itr = tqdm.trange(epochs)
+        else:
+            itr = range(epochs)
+        for _ in itr:
             self.rng.shuffle(self.demo_idx)
             for i in range(self.demo_idx.shape[0] // self.minibatch_size):
                 demo_idx = self.demo_idx[
@@ -177,24 +182,46 @@ class JointReDistillTrainer(PPOTrainer):
                 bc_logp_1, _ = self.agents.policy_forward(self.demo, demo_idx)
                 bc_logp_2, _ = self.agents.policy_forward_2(self.demo, demo_idx)
 
-                total_loss = -bc_logp_1 - bc_logp_2
+                total_loss = -bc_logp_1.mean() - bc_logp_2.mean()
 
                 temp_optim.zero_grad(set_to_none=True)
                 total_loss.backward()
                 temp_optim.step()
 
                 if logger is not None:
-                    logger.log(bc_pretrain_loss=total_loss.item())
+                    logger.log(pretrain_loss_bc=total_loss.item())
             if logger is not None:
                 logger.step()
 
-    def pretrain_value(self, lr, weight_decay, epochs=50, sample_reuse=3, logger=None):
+        for param in self.agents.parameters():
+            assert not param.isnan().any()
+
+    def pretrain_value(
+        self,
+        lr,
+        weight_decay,
+        epochs=50,
+        sample_reuse=3,
+        beta_kl=None,
+        logger=None,
+        verbose=False,
+    ):
         temp_optim = torch.optim.Adam(
             self.agents.parameters(), lr=lr, weight_decay=weight_decay
         )
 
         idx = np.arange(self.rollout_steps)
-        for _ in range(epochs):
+
+        if beta_kl is None:
+            frozen_agents = None
+        else:
+            frozen_agents = copy.deepcopy(self.agents)
+
+        if verbose:
+            itr = tqdm.trange(epochs)
+        else:
+            itr = range(epochs)
+        for _ in itr:
             self.collect_rollout()
 
             for _ in range(sample_reuse):
@@ -207,11 +234,39 @@ class JointReDistillTrainer(PPOTrainer):
                     v_pred = self.agents.value_forward(self.rollout, batch_idx)
                     loss_v = ((v_pred - self.rollout["ret"][batch_idx]) ** 2).mean()
 
-                    temp_optim.zero_grad(set_to_none=True)
-                    loss_v.backward()
-                    temp_optim.step()
-                    if logger is not None:
-                        logger.log(bc_pretrain_loss=loss_v.item())
+                    # can be used if params are shared, to preserve policy
+                    if beta_kl is not None:
+                        with torch.no_grad():
+                            _, distrs_old = frozen_agents.policy_forward(
+                                self.rollout, batch_idx
+                            )
+                        _, distrs_curr = self.agents.policy_forward(
+                            self.rollout, batch_idx
+                        )
+
+                        loss_kl = sum(
+                            distributions.kl_divergence(
+                                distrs_old[i], distrs_curr[i]
+                            ).mean()
+                            for i in range(2)
+                        )
+                        total_loss = loss_v + beta_kl * loss_kl
+
+                        temp_optim.zero_grad(set_to_none=True)
+                        total_loss.backward()
+                        temp_optim.step()
+                        if logger is not None:
+                            logger.log(
+                                pretrain_loss_vf=loss_v.item(),
+                                pretrain_loss_kl=loss_kl.item(),
+                                pretrain_loss_total=total_loss.item(),
+                            )
+                    else:
+                        temp_optim.zero_grad(set_to_none=True)
+                        loss_v.backward()
+                        temp_optim.step()
+                        if logger is not None:
+                            logger.log(pretrain_loss_vf=loss_v.item())
             if logger is not None:
                 logger.step()
 

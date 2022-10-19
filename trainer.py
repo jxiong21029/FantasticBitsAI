@@ -58,6 +58,7 @@ class Trainer(ABC):
                 if done:
                     obses[i] = env.reset()
                     total_done += 1
+        temp_logger.step()
 
         for k, v in temp_logger.cumulative_data.items():
             self.logger.cumulative_data["eval_" + k].extend(v)
