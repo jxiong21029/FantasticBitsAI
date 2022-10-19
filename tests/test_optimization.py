@@ -4,14 +4,14 @@ import torch
 from torch.distributions import kl_divergence
 
 from architectures import VonMisesAgents
-from ppo import PPOTrainer
+from ppo import PPOConfig, PPOTrainer
 
 
 @pytest.fixture(scope="module")
 def sample_rollout():
     rng = np.random.default_rng(42 * 0xBEEF)
     torch.manual_seed(rng.integers(2**32))
-    trainer = PPOTrainer(agents=VonMisesAgents(), rollout_steps=128)
+    trainer = PPOTrainer(VonMisesAgents(), PPOConfig(rollout_steps=128))
     trainer.collect_rollout()
     return trainer.rollout
 

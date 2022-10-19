@@ -6,18 +6,19 @@ import torch.nn as nn
 from torch import distributions
 
 from architectures import VonMisesAgents
-from ppo import PPOTrainer
+from ppo import PPOConfig, PPOTrainer
 from utils import component_grad_norms
 
 
 class DirectDistillationTrainer(PPOTrainer):
     def __init__(
         self,
+        agents,
+        ppo_config: PPOConfig,
         ckpt_filename,
         beta_kl=1.0,
-        **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(agents, ppo_config)
         self.beta_kl = beta_kl
 
         self.frozen_agents = copy.deepcopy(self.agents)
@@ -80,16 +81,18 @@ def main():
             dropout=0,
         ),
         ckpt_filename="../../bc_agents.pth",
-        lr=10**-3.5,
-        minibatch_size=512,
-        weight_decay=10**-3,
-        gae_lambda=0.975,
-        epochs=2,
         beta_kl=0.1,
-        env_kwargs={
-            "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": 3.0,
-        },
+        ppo_config=PPOConfig(
+            lr=10**-3.5,
+            minibatch_size=512,
+            weight_decay=10**-3,
+            gae_lambda=0.975,
+            epochs=2,
+            env_kwargs={
+                "reward_shaping_snaffle_goal_dist": True,
+                "reward_own_goal": 3.0,
+            },
+        ),
     )
     for i in tqdm.trange(501):
         trainer.train_epoch()

@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from architectures import VonMisesAgents
-from ppo import PPOTrainer
+from ppo import PPOConfig, PPOTrainer
 from utils import Logger, component_grad_norms
 
 
@@ -59,8 +59,8 @@ class ReDistillAgents(VonMisesAgents):
 
 
 class PhasicReDistillTrainer(PPOTrainer):
-    def __init__(self, lr, weight_decay, demo_filename, beta_kl=1.0, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, agents, ppo_config: PPOConfig, demo_filename, beta_kl=1.0):
+        super().__init__(agents, ppo_config)
         self.beta_kl = beta_kl
 
         with open(demo_filename, "rb") as f:
@@ -79,7 +79,9 @@ class PhasicReDistillTrainer(PPOTrainer):
         self.ptr = 0
 
         self.phase2_optim = torch.optim.Adam(
-            self.agents.parameters(), lr=lr, weight_decay=weight_decay
+            self.agents.parameters(),
+            lr=ppo_config.lr,
+            weight_decay=ppo_config.weight_decay,
         )
 
     def train_epoch(self):
@@ -137,13 +139,12 @@ class PhasicReDistillTrainer(PPOTrainer):
 class JointReDistillTrainer(PPOTrainer):
     def __init__(
         self,
+        agents: ReDistillAgents,
+        ppo_config: PPOConfig,
         demo_filename,
         beta_bc=1.0,
-        **kwargs,
     ):
-        super().__init__(
-            **kwargs,
-        )
+        super().__init__(agents, ppo_config)
         self.beta_bc = beta_bc
 
         with open(demo_filename, "rb") as f:
@@ -270,17 +271,19 @@ def main():
             nhead=2,
             dim_feedforward=128,
         ),
-        env_kwargs={
-            "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": 3.0,
-        },
         demo_filename="../../data/basic_demo.pickle",
-        lr=10**-3,
-        gae_lambda=0.5,
-        minibatch_size=256,
-        weight_decay=10**-3.5,
-        epochs=2,
         beta_bc=1e-1,
+        ppo_config=PPOConfig(
+            env_kwargs={
+                "reward_shaping_snaffle_goal_dist": True,
+                "reward_own_goal": 3.0,
+            },
+            lr=10**-3,
+            gae_lambda=0.5,
+            minibatch_size=256,
+            weight_decay=10**-3.5,
+            epochs=2,
+        ),
     )
     for i in tqdm.trange(201):
         trainer.train_epoch()

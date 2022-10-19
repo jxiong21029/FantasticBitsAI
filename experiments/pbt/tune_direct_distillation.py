@@ -10,6 +10,7 @@ from ray.tune.search.sample import Domain
 
 from architectures import VonMisesAgents
 from experiments.distillation.direct_distill import DirectDistillationTrainer
+from ppo import PPOConfig
 
 
 def train(config):
@@ -17,17 +18,19 @@ def train(config):
     trainer = DirectDistillationTrainer(
         agents,
         ckpt_filename="../../../../bc_agents.pth",
-        lr=config["lr"],
-        gae_lambda=0.975,
-        minibatch_size=config["minibatch_size"],
-        weight_decay=config["weight_decay"],
-        epochs=config["epochs"],
         beta_kl=config["beta_kl"],
-        env_kwargs={
-            "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": 3.0,
-            "reward_teammate_goal": 0.0,
-        },
+        ppo_config=PPOConfig(
+            lr=config["lr"],
+            gae_lambda=0.975,
+            minibatch_size=config["minibatch_size"],
+            weight_decay=config["weight_decay"],
+            epochs=config["epochs"],
+            env_kwargs={
+                "reward_shaping_snaffle_goal_dist": True,
+                "reward_own_goal": 3.0,
+                "reward_teammate_goal": 0.0,
+            },
+        ),
     )
 
     if checkpoint := session.get_checkpoint():  # if resuming from a checkpoint

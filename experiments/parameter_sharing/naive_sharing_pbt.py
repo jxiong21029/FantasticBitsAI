@@ -9,6 +9,7 @@ from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.sample import Domain
 
 from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
+from ppo import PPOConfig
 
 
 def train(config):
@@ -19,24 +20,26 @@ def train(config):
     trainer = JointReDistillTrainer(
         agents,
         demo_filename="../../../../data/basic_demo.pickle",
-        lr=config["lr"],
-        gamma=1 - config.get("1-gamma", 0.01),
-        gae_lambda=1 - config.get("1-gae_lambda", 0.03),
-        weight_decay=config.get("weight_decay", 1e-5),
-        rollout_steps=4096,
-        minibatch_size=512,
-        epochs=config.get("epochs", 3),
-        ppo_clip_coeff=config["ppo_clip_coeff"],
-        grad_clipping=10.0,
-        entropy_reg=config["entropy_reg"],
-        value_loss_wt=config["value_loss_wt"],
         beta_bc=config["beta_bc"],
-        env_kwargs={
-            "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": 2,
-            "reward_teammate_goal": 2,
-            "reward_opponent_goal": -2,
-        },
+        ppo_config=PPOConfig(
+            lr=config["lr"],
+            gamma=1 - config.get("1-gamma", 0.01),
+            gae_lambda=1 - config.get("1-gae_lambda", 0.03),
+            weight_decay=config.get("weight_decay", 1e-5),
+            rollout_steps=4096,
+            minibatch_size=512,
+            epochs=config.get("epochs", 3),
+            ppo_clip_coeff=config["ppo_clip_coeff"],
+            grad_clipping=10.0,
+            entropy_reg=config["entropy_reg"],
+            value_loss_wt=config["value_loss_wt"],
+            env_kwargs={
+                "reward_shaping_snaffle_goal_dist": True,
+                "reward_own_goal": 2,
+                "reward_teammate_goal": 2,
+                "reward_opponent_goal": -2,
+            },
+        ),
     )
 
     if checkpoint := session.get_checkpoint():  # if resuming from a checkpoint

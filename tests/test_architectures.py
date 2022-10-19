@@ -4,12 +4,12 @@ import numpy as np
 import torch
 
 from architectures import GaussianAgents, VonMisesAgents
-from ppo import PPOTrainer
+from ppo import PPOConfig, PPOTrainer
 
 
 def test_permutation_invariance_gaussian():
     agents = GaussianAgents(flip_augment=False)
-    trainer = PPOTrainer(agents, rollout_steps=128)
+    trainer = PPOTrainer(agents, PPOConfig(rollout_steps=128))
     trainer.collect_rollout()
 
     rollout_cpy = copy.deepcopy(trainer.rollout)
@@ -39,7 +39,7 @@ def test_permutation_invariance_gaussian():
 
 def test_permutation_invariance_von_mises():
     agents = VonMisesAgents(flip_augment=False)
-    trainer = PPOTrainer(agents, rollout_steps=128)
+    trainer = PPOTrainer(agents, PPOConfig(rollout_steps=128))
     trainer.collect_rollout()
 
     rollout_cpy = copy.deepcopy(trainer.rollout)

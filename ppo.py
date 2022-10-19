@@ -1,3 +1,6 @@
+from dataclasses import dataclass, field
+from typing import Optional
+
 import numpy as np
 import torch
 import torch.distributions as distributions
@@ -141,60 +144,66 @@ class RolloutBuffer:
         }
 
 
+@dataclass
+class PPOConfig:
+    lr: float = 1e-4
+    gamma: float = 0.99
+    gae_lambda: float = 0.97
+    weight_decay: float = 1e-5
+    rollout_steps: int = 4096
+    minibatch_size: int = 512
+    epochs: int = 3
+    ppo_clip_coeff: float = 0.2
+    grad_clipping: Optional[float] = None
+    entropy_reg: float = 1e-6
+    value_loss_wt: float = 1.0
+    env_kwargs: dict = field(default_factory=dict)
+    vectorized_envs: int = 8
+    rollout_device: torch.device = torch.device("cpu")
+    train_device: torch.device = torch.device("cpu")
+    seed: Optional[int] = None
+
+
 class PPOTrainer(Trainer):
     def __init__(
         self,
         agents,
-        gamma=0.99,
-        gae_lambda=0.97,
-        lr=1e-4,
-        weight_decay=1e-5,
-        rollout_steps=4096,
-        minibatch_size=512,
-        epochs=3,
-        ppo_clip_coeff=0.2,
-        grad_clipping=10.0,
-        entropy_reg=1e-6,
-        value_loss_wt=1.0,
-        env_kwargs=None,
-        vectorized_envs=8,
-        rollout_device=torch.device("cpu"),
-        train_device=torch.device("cpu"),
-        seed=None,
+        config: PPOConfig = None,
     ):
-        super().__init__(env_kwargs=env_kwargs, seed=seed)
-        self.rollout_device = rollout_device
-        self.train_device = train_device
+        if config is None:
+            config = PPOConfig()
+
+        super().__init__(env_kwargs=config.env_kwargs, seed=config.seed)
+        self.rollout_device = config.rollout_device
+        self.train_device = config.train_device
         self._agents = agents
         self.optim = torch.optim.Adam(
-            agents.parameters(), lr=lr, weight_decay=weight_decay
+            agents.parameters(), lr=config.lr, weight_decay=config.weight_decay
         )
         self.bufs = [
             RolloutBuffer(
-                size=rollout_steps // vectorized_envs,
-                gamma=gamma,
-                lam=gae_lambda,
+                size=config.rollout_steps // config.vectorized_envs,
+                gamma=config.gamma,
+                lam=config.gae_lambda,
                 logger=self.logger,
-                device=train_device,
+                device=config.train_device,
             )
-            for _ in range(vectorized_envs)
+            for _ in range(config.vectorized_envs)
         ]
-        self.rollout_steps = rollout_steps
-        self.minibatch_size = minibatch_size
-        self.epochs = epochs
+        self.rollout_steps = config.rollout_steps
+        self.minibatch_size = config.minibatch_size
+        self.epochs = config.epochs
 
-        self.ppo_clip_coeff = ppo_clip_coeff
-        self.grad_clipping = grad_clipping
-        self.entropy_reg = entropy_reg
-        self.value_loss_wt = value_loss_wt
+        self.ppo_clip_coeff = config.ppo_clip_coeff
+        self.grad_clipping = config.grad_clipping
+        self.entropy_reg = config.entropy_reg
+        self.value_loss_wt = config.value_loss_wt
 
-        if env_kwargs is None:
-            env_kwargs = {}
-        env_kwargs["reward_gamma"] = gamma
-        self.env_kwargs = env_kwargs
+        config.env_kwargs["reward_gamma"] = config.gamma
+        self.env_kwargs = config.env_kwargs
         self.envs = [
-            FantasticBits(**env_kwargs, logger=self.logger)
-            for _ in range(vectorized_envs)
+            FantasticBits(**config.env_kwargs, logger=self.logger)
+            for _ in range(config.vectorized_envs)
         ]
         self.env_obs = [env.reset() for env in self.envs]
         self.env_idx = 0
@@ -374,20 +383,17 @@ class PPOTrainer(Trainer):
 def main():
     trainer = PPOTrainer(
         VonMisesAgents(),
-        lr=10**-3.5,
-        gamma=0.99,
-        gae_lambda=0.98,
-        weight_decay=1e-5,
-        rollout_steps=4096,
-        minibatch_size=512,
-        epochs=3,
-        ppo_clip_coeff=0.1,
-        grad_clipping=10.0,
-        entropy_reg=1e-6,
-        env_kwargs={
-            "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": 3,
-        },
+        PPOConfig(
+            lr=10**-3.5,
+            gae_lambda=0.98,
+            ppo_clip_coeff=0.1,
+            grad_clipping=10.0,
+            entropy_reg=1e-6,
+            env_kwargs={
+                "reward_shaping_snaffle_goal_dist": True,
+                "reward_own_goal": 3,
+            },
+        ),
     )
     for i in tqdm.trange(500):
         trainer.train_epoch()

@@ -9,6 +9,7 @@ from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.sample import Domain
 
 from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
+from ppo import PPOConfig
 
 
 def train(config):
@@ -16,21 +17,23 @@ def train(config):
     trainer = JointReDistillTrainer(
         agents,
         demo_filename="../../../../data/basic_demo.pickle",
-        lr=config["lr"],
-        gae_lambda=1 - config["1-gae_lambda"],
-        minibatch_size=config["minibatch_size"],
-        weight_decay=config["weight_decay"],
-        epochs=config["epochs"],
         beta_bc=config["beta_bc"],
-        entropy_reg=config["entropy_reg"],
-        env_kwargs={
-            "reward_shaping_snaffle_goal_dist": True,
-            "reward_own_goal": config["reward_own_goal"],
-            "reward_teammate_goal": config["reward_own_goal"]
-            if config["shared_reward"]
-            else 0.0,
-            "reward_opponent_goal": config["reward_opponent_goal"],
-        },
+        ppo_config=PPOConfig(
+            lr=config["lr"],
+            gae_lambda=1 - config["1-gae_lambda"],
+            minibatch_size=config["minibatch_size"],
+            weight_decay=config["weight_decay"],
+            epochs=config["epochs"],
+            entropy_reg=config["entropy_reg"],
+            env_kwargs={
+                "reward_shaping_snaffle_goal_dist": True,
+                "reward_own_goal": config["reward_own_goal"],
+                "reward_teammate_goal": config["reward_own_goal"]
+                if config["shared_reward"]
+                else 0.0,
+                "reward_opponent_goal": config["reward_opponent_goal"],
+            },
+        ),
     )
 
     if checkpoint := session.get_checkpoint():  # if resuming from a checkpoint
