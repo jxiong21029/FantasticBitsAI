@@ -1,9 +1,9 @@
+from ray import air, tune
+
 from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
-from utils import Logger
-
 from tuning import IntervalHalvingSearch, log_halving_search
-from ray import air, tune
+from utils import Logger
 
 
 def train(config):
