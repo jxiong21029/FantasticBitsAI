@@ -123,6 +123,25 @@ class Logger:
             fig.savefig(os.path.join(dirname, name))
             plt.close(fig)
 
+    def estimate_convergence(self, key, smoothing=0.9, eps=1e-8):
+        assert key in self.cumulative_data
+
+        m = 0
+        v = 0
+        data = self.cumulative_data[key]
+        if len(data) <= 1:
+            return 0
+
+        diffs = [data[i + 1] - data[i] for i in range(len(data) - 1)]
+
+        for d in diffs:
+            m = smoothing * m + (1 - smoothing) * d
+            v = smoothing * v + (1 - smoothing) * d * d
+
+        mh = m / (1 - smoothing ** len(diffs))
+        vh = v / (1 - smoothing ** len(diffs))
+        return 1 - abs(mh) / (math.sqrt(vh) + eps)
+
 
 def grad_norm(module):
     with torch.no_grad():
