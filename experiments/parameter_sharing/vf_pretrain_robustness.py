@@ -3,7 +3,6 @@ from ray import air, tune
 from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
 from tuning import IntervalHalvingSearch, log_halving_search
-from utils import Logger
 
 
 def train(config):
@@ -13,7 +12,7 @@ def train(config):
 
     trainer = JointReDistillTrainer(
         agents,
-        demo_filename="../../data/basic_demo.pickle",
+        demo_filename="../../../../data/basic_demo.pickle",
         beta_bc=0.3,
         ppo_config=PPOConfig(
             lr=10**-3.5,
@@ -36,23 +35,28 @@ def train(config):
         ),
     )
 
-    phase1_logger = Logger()
     trainer.pretrain_policy(
-        lr=config["lr_bc"],
-        weight_decay=config["l2_bc"],
+        lr=10**-2.5, weight_decay=10**-2.5, epochs=50, logger=trainer.logger
+    )
+
+    trainer.pretrain_value(
+        lr=config["lr_vf"],
+        weight_decay=config["l2_vf"],
+        beta_kl=config["beta_kl"],
         epochs=50,
-        logger=phase1_logger,
-        verbose=True,
+        logger=trainer.logger,
     )
     trainer.vectorized_evaluate(200)
-    phase1_logger.tune_report()
+
+    trainer.logger.tune_report()
 
 
 def main():
     searcher = IntervalHalvingSearch(
         search_space={
-            "lr_bc": log_halving_search(1e-4, 1e-3, 1e-2),
-            "l2_bc": log_halving_search(1e-5, 1e-4, 1e-3),
+            "lr_vf": log_halving_search(1e-4, 1e-3, 1e-2),
+            "l2_vf": log_halving_search(1e-5, 1e-4, 1e-3),
+            "beta_kl": log_halving_search(1e-2, 1e0, 1e2),
         },
         depth=1,
         metric="eval_goals_scored_mean",
@@ -62,10 +66,11 @@ def main():
         train,
         tune_config=tune.TuneConfig(
             search_alg=searcher,
+            num_samples=-1,
             max_concurrent_trials=8,
         ),
         run_config=air.RunConfig(
-            name="tune_pretrain",
+            name="tune_pretrain_vf",
             local_dir="../ray_results",
         ),
     )
