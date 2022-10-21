@@ -1,20 +1,21 @@
 import os
-import random
-from collections import defaultdict
 
 import numpy as np
-import tqdm
+import ray
 
 from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
 from utils import Logger
 
+
+SMOKE_TEST = False
+
 dirs = os.getcwd().split("/")
 root_dir = os.path.join(*dirs[: 1 + dirs.index("FantasticBits")])
 
-res = defaultdict(list)
-for i in tqdm.trange(20):
-    print("starting iteration", i)
+
+@ray.remote(num_cpus=1)
+def run_trial():
     agents = ReDistillAgents(
         num_layers=2,
         d_model=64,
@@ -52,42 +53,32 @@ for i in tqdm.trange(20):
     trainer.pretrain_policy(
         lr=1e-3,
         weight_decay=1e-4,
-        epochs=50,
+        epochs=1 if SMOKE_TEST else 50,
         logger=phase1_logger,
     )
-    trainer.vectorized_evaluate(200)
+    trainer.vectorized_evaluate(5 if SMOKE_TEST else 200)
 
-    p1c = phase1_logger.estimate_convergence("pretrain_loss_bc_mean")
-    print("phase 1 convergence:", p1c)
     p1g = trainer.logger.cumulative_data["eval_goals_scored_mean"][-1]
-    print("phase 1 goals:", p1g)
 
     phase2_logger = Logger()
     trainer.pretrain_value(
         lr=1e-4,
         weight_decay=1e-3,
-        beta_kl=10,
-        epochs=50,
+        beta_kl=1,
+        epochs=1 if SMOKE_TEST else 50,
         logger=phase2_logger,
     )
-    trainer.vectorized_evaluate(200)
+    trainer.vectorized_evaluate(5 if SMOKE_TEST else 200)
 
-    p2c = phase2_logger.estimate_convergence("pretrain_loss_total_mean")
-    print(
-        "phase 2 convergence:",
-        p2c,
-    )
     p2g = trainer.logger.cumulative_data["eval_goals_scored_mean"][-1]
-    print("phase 2 goals:", p2g)
 
-    res["phase1_score"].append(p1g)
-    res["phase2_score"].append(p2g)
+    return p1g, p2g
 
 
 def iqm_ci(dataset):
     results = []
     for _ in range(1000):
-        data = np.array(random.choices(dataset, k=len(dataset)))
+        data = np.random.choice(dataset, size=len(dataset))
         lower_bound = np.percentile(data, 25, method="lower")
         upper_bound = np.percentile(data, 75, method="higher")
 
@@ -100,5 +91,22 @@ def iqm_ci(dataset):
     )
 
 
-for k, v in res:
-    print(k, iqm_ci(v))
+def main():
+    ray.init(num_cpus=8)
+
+    futures = ray.get([run_trial.remote() for _ in range(20)])
+
+    scores_1 = np.zeros(20)
+    scores_2 = np.zeros(20)
+    for i in range(20):
+        s1, s2 = futures[i]
+        scores_1[i] = s1
+        scores_2[i] = s2
+
+    print("BC pretraining:", iqm_ci(scores_1))
+    print("BC+VF pretraining:", iqm_ci(scores_2))
+    print("Improvement:", iqm_ci(scores_2 - scores_1))
+
+
+if __name__ == "__main__":
+    main()
