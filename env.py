@@ -1,9 +1,12 @@
 import sys
 import warnings
+from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
 from engine import POLES, Bludger, Point, Snaffle, Wizard, engine_step
+from utils import Logger
 
 DIST_NORM = 8000
 VEL_NORM = 1000
@@ -16,37 +19,41 @@ SCALE = 20
 MARGIN = 25
 
 
+@dataclass
+class FantasticBitsConfig:
+    bludgers_enabled: bool = True
+    opponents_enabled: bool = True
+    reward_win: float = 0.0
+    reward_loss: float = 0.0
+    reward_own_goal: float = 1.0
+    reward_teammate_goal: float = 1.0
+    reward_opponent_goal: float = 0.0
+    reward_shaping_snaffle_goal_dist: bool = False
+    reward_gamma: float = 0.99
+    render: bool = False
+    seed: Optional[int] = None
+    logger: Optional[Logger] = None
+
+
 class FantasticBits:
-    def __init__(
-        self,
-        *,
-        bludgers_enabled=True,
-        opponents_enabled=True,
-        reward_win=0.0,
-        reward_loss=0.0,
-        reward_own_goal=1.0,
-        reward_teammate_goal=1.0,
-        reward_opponent_goal=0.0,
-        reward_shaping_snaffle_goal_dist=False,
-        reward_gamma=0.99,
-        render=False,
-        seed=None,
-        logger=None,
-    ):
-        self.rng = np.random.default_rng(seed=seed)
-        self.logger = logger
-        self.render = render
+    def __init__(self, config: FantasticBitsConfig = None, **kwargs):
+        if config is None:
+            config = FantasticBitsConfig(**kwargs)
 
-        self.bludgers_enabled = bludgers_enabled
-        self.opponents_enabled = opponents_enabled
+        self.rng = np.random.default_rng(seed=config.seed)
+        self.logger = config.logger
+        self.render = config.render
 
-        self.reward_win = reward_win
-        self.reward_loss = reward_loss
-        self.reward_own_goal = reward_own_goal
-        self.reward_teammate_goal = reward_teammate_goal
-        self.reward_opponent_goal = reward_opponent_goal
-        self.reward_shaping_snaffle_goal_dist = reward_shaping_snaffle_goal_dist
-        self.reward_gamma = reward_gamma
+        self.bludgers_enabled = config.bludgers_enabled
+        self.opponents_enabled = config.opponents_enabled
+
+        self.reward_win = config.reward_win
+        self.reward_loss = config.reward_loss
+        self.reward_own_goal = config.reward_own_goal
+        self.reward_teammate_goal = config.reward_teammate_goal
+        self.reward_opponent_goal = config.reward_opponent_goal
+        self.reward_shaping_snaffle_goal_dist = config.reward_shaping_snaffle_goal_dist
+        self.reward_gamma = config.reward_gamma
 
         self.t = 0
         self.score = [0, 0]
@@ -57,7 +64,7 @@ class FantasticBits:
         self.agents: list[Wizard] = []
         self.opponents: list[Wizard] = []
 
-        if render:
+        if config.render:
             import pygame
 
             self.screen = pygame.display.set_mode(

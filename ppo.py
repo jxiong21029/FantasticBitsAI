@@ -199,12 +199,18 @@ class PPOTrainer(Trainer):
         self.entropy_reg = config.entropy_reg
         self.value_loss_wt = config.value_loss_wt
 
-        config.env_kwargs["reward_gamma"] = config.gamma
-        self.env_kwargs = config.env_kwargs
-        self.envs = [
-            FantasticBits(**config.env_kwargs, logger=self.logger)
-            for _ in range(config.vectorized_envs)
-        ]
+        if isinstance(config.env_kwargs, dict):
+            config.env_kwargs["reward_gamma"] = config.gamma
+            self.envs = [
+                FantasticBits(**config.env_kwargs, logger=self.logger)
+                for _ in range(config.vectorized_envs)
+            ]
+        else:
+            config.env_kwargs.reward_gamma = config.gamma
+            config.env_kwargs.logger = self.logger
+            self.envs = [
+                FantasticBits(config.env_kwargs) for _ in range(config.vectorized_envs)
+            ]
         self.env_obs = [env.reset() for env in self.envs]
         self.env_idx = 0
 
