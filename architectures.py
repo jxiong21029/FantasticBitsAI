@@ -1,3 +1,4 @@
+import copy
 import warnings
 
 import numpy as np
@@ -73,11 +74,8 @@ class Encoder(nn.Module):
             )
 
             for i, k in enumerate(k for k in ordered_keys if k in obs):
-                entry = obs[k][batch_idx]
+                entry = copy.deepcopy(obs[k][batch_idx])
                 # shape B, F; F=4 (snaffle), 6 (wizard), etc..
-
-                if k.startswith("snaffle") or (flip_augment and not k == "global"):
-                    entry = entry.clone()
 
                 if k.startswith("snaffle"):
                     padding_mask[entry.isnan()[:, 0], i] = 1

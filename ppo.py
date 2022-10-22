@@ -51,9 +51,6 @@ class RolloutBuffer:
         self.gamma, self.lam = gamma, lam
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
-        self.discounted_rew_tot = np.zeros(2, dtype=np.float32)
-        self.rew_stats = [RunningMoments(), RunningMoments()]
-
     def store(self, obs, act, rew, logp):
         """
         Append one timestep of agent-environment interaction to the buffer.
@@ -68,11 +65,7 @@ class RolloutBuffer:
         for k, v in act.items():
             self.act_buf[k][self.ptr] = v
 
-        self.discounted_rew_tot = self.gamma * self.discounted_rew_tot + rew
-        for i in range(2):
-            self.rew_stats[i].push(self.discounted_rew_tot[i])
-            self.rew_buf[self.ptr, i] = rew[i] / (self.rew_stats[i].std() + 1e-8)
-
+        self.rew_buf[self.ptr] = rew
         self.logp_buf[self.ptr] = logp
 
         self.ptr += 1
@@ -176,6 +169,7 @@ class PPOTrainer(Trainer):
         super().__init__(env_kwargs=config.env_kwargs, seed=config.seed)
         self.rollout_device = config.rollout_device
         self.train_device = config.train_device
+
         self._agents = agents
         self.optim = torch.optim.Adam(
             agents.parameters(), lr=config.lr, weight_decay=config.weight_decay
@@ -190,10 +184,12 @@ class PPOTrainer(Trainer):
             )
             for _ in range(config.vectorized_envs)
         ]
+        self.reward_stats = RunningMoments()
+        self.reward_emas = np.zeros(config.vectorized_envs)
+
         self.rollout_steps = config.rollout_steps
         self.minibatch_size = config.minibatch_size
         self.epochs = config.epochs
-
         self.ppo_clip_coeff = config.ppo_clip_coeff
         self.grad_clipping = config.grad_clipping
         self.entropy_reg = config.entropy_reg
@@ -232,11 +228,17 @@ class PPOTrainer(Trainer):
                     actions[self.env_idx]
                 )
 
+                self.reward_emas[self.env_idx] = (
+                    self.bufs[self.env_idx].gamma * self.reward_emas[self.env_idx]
+                    + reward.mean()
+                )
+                self.reward_stats.push(self.reward_emas[self.env_idx])
+
                 buf = self.bufs[self.env_idx]
                 buf.store(
                     self.env_obs[self.env_idx],
                     actions[self.env_idx],
-                    reward,
+                    reward / (self.reward_stats.std() + 1e-4),
                     logps[self.env_idx],
                 )
                 self.env_obs[self.env_idx] = next_obs
@@ -244,6 +246,7 @@ class PPOTrainer(Trainer):
                 epoch_ended = t >= self.rollout_steps - len(self.envs)
                 if epoch_ended or done:
                     if done:
+                        self.reward_emas[self.env_idx] = 0
                         value = (0, 0)
                     else:
                         value = self.agents.predict_value(
@@ -315,8 +318,11 @@ class PPOTrainer(Trainer):
                     total_loss += -self.entropy_reg * scaled_entropy
                     total_entropy += scaled_entropy.item() + 0.5
                 else:
-                    total_loss += (-self.entropy_reg * (ent := d.entropy())).mean()
-                    total_entropy += ent.mean().item()
+                    entropy = d.entropy().mean()
+                    total_loss += -self.entropy_reg * entropy
+                    total_entropy += entropy.item()
+        else:
+            total_entropy = sum(d.entropy().mean().item() for d in distrs)
 
         self.logger.log(
             loss_pi=loss_pi.item(),
