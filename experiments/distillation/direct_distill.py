@@ -24,7 +24,7 @@ class DirectDistillationTrainer(PPOTrainer):
         self.frozen_agents = copy.deepcopy(self.agents)
         self.frozen_agents.load_state_dict(torch.load(ckpt_filename))
 
-    def train_epoch(self):
+    def run(self):
         self.collect_rollout()
         self.agents.train()
 
@@ -95,7 +95,7 @@ def main():
         ),
     )
     for i in tqdm.trange(501):
-        trainer.train_epoch()
+        trainer.run()
         if i % 20 == 0:
             trainer.evaluate()
             trainer.logger.generate_plots("plotgen_direct")

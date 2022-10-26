@@ -19,7 +19,7 @@ def probably_dont_share_memory(arr1, arr2):
 
 def test_objects_permutation_invariance_gaussian():
     agents = GaussianAgents(flip_augment=False)
-    trainer = PPOTrainer(agents, PPOConfig(rollout_steps=128))
+    trainer = PPOTrainer(agents, PPOConfig(minibatch_size=64, rollout_steps=128))
     trainer.collect_rollout()
 
     rollout_cpy = copy.deepcopy(trainer.rollout)
@@ -49,7 +49,7 @@ def test_objects_permutation_invariance_gaussian():
 
 def test_objects_permutation_invariance_von_mises():
     agents = VonMisesAgents(flip_augment=False)
-    trainer = PPOTrainer(agents, PPOConfig(rollout_steps=128))
+    trainer = PPOTrainer(agents, PPOConfig(minibatch_size=64, rollout_steps=128))
     trainer.collect_rollout()
 
     rollout_cpy = copy.deepcopy(trainer.rollout)
@@ -83,7 +83,7 @@ def test_objects_permutation_invariance_von_mises():
 
 def test_agents_permutation_symmetry():
     agents = VonMisesAgents(flip_augment=False)
-    trainer = PPOTrainer(agents, PPOConfig(rollout_steps=128))
+    trainer = PPOTrainer(agents, PPOConfig(minibatch_size=64, rollout_steps=128))
     trainer.collect_rollout()
 
     rollout_cpy = copy.deepcopy(trainer.rollout)

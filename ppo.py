@@ -10,7 +10,7 @@ import tqdm
 from architectures import VonMisesAgents
 from env import SZ_BLUDGER, SZ_GLOBAL, SZ_SNAFFLE, SZ_WIZARD, FantasticBits
 from trainer import Trainer
-from utils import RunningMoments, discount_cumsum, grad_norm
+from utils import RunningMoments, component_grad_norms, discount_cumsum
 
 
 # adapted from SpinningUp PPO
@@ -117,8 +117,7 @@ class RolloutBuffer:
         explained_var = 1 - np.var(self.ret_buf - self.val_buf) / np.var(self.ret_buf)
         if self.logger is not None:
             self.logger.log(
-                value_target_mean=np.mean(self.ret_buf),
-                value_target_std=np.std(self.ret_buf),
+                value_target=np.mean(self.ret_buf),
                 explained_variance=explained_var,
             )
 
@@ -165,6 +164,7 @@ class PPOTrainer(Trainer):
     ):
         if config is None:
             config = PPOConfig()
+        assert config.minibatch_size <= config.rollout_steps
 
         super().__init__(env_kwargs=config.env_kwargs, seed=config.seed)
         self.rollout_device = config.rollout_device
@@ -336,7 +336,7 @@ class PPOTrainer(Trainer):
         )
         return total_loss
 
-    def train_epoch(self):
+    def run(self):
         self.collect_rollout()
         self.agents.to(self.train_device)
         self.agents.train()
@@ -356,22 +356,15 @@ class PPOTrainer(Trainer):
                 self.optim.zero_grad(set_to_none=True)
                 total_loss.backward()
 
-                norm = grad_norm(self.agents)
+                norms = component_grad_norms(self.agents)
 
-                self.logger.log(
-                    grad_norm=norm,
-                    grad_norm_policy_encoder=grad_norm(self.agents.policy_encoder),
-                    grad_norm_value_encoder=grad_norm(self.agents.value_encoder),
-                    grad_norm_move_head=grad_norm(self.agents.move_head),
-                    grad_norm_throw_head=grad_norm(self.agents.throw_head),
-                    grad_norm_value_head=grad_norm(self.agents.value_head),
-                )
+                self.logger.log(**{f"grad_norm_{k}": v for k, v in norms.items()})
                 if self.grad_clipping is not None:
                     nn.utils.clip_grad_norm_(
                         self.agents.parameters(), self.grad_clipping
                     )
                     self.logger.log(
-                        grad_clipped=(norm > self.grad_clipping)
+                        grad_clipped=(norms["total"] > self.grad_clipping)
                         if self.grad_clipping is not None
                         else False,
                     )
@@ -408,7 +401,7 @@ def main():
         ),
     )
     for i in tqdm.trange(500):
-        trainer.train_epoch()
+        trainer.run()
         if i % 20 == 19:
             trainer.evaluate()
             trainer.logger.generate_plots()

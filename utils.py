@@ -15,6 +15,8 @@ from scipy.signal import lfilter
 matplotlib.use("Tkagg")
 seaborn.set_theme()
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # adapted from SpinningUp PPO
 def discount_cumsum(x, discount):
@@ -145,16 +147,16 @@ class Logger:
 
 def grad_norm(module):
     with torch.no_grad():
-        return torch.norm(
-            torch.stack(
-                [
-                    torch.norm(p.grad.detach(), 2.0)
-                    for p in module.parameters()
-                    if p.grad is not None
-                ]
-            ),
-            2.0,
-        ).item()
+        if components := [
+            torch.norm(p.grad.detach(), 2.0)
+            for p in module.parameters()
+            if p.grad is not None
+        ]:
+            return torch.norm(
+                torch.stack(components),
+                2.0,
+            ).item()
+        return 0
 
 
 def component_grad_norms(module, exclude=None):

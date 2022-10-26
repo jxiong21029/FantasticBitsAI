@@ -8,7 +8,7 @@ from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.sample import Domain
 
-from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
+from experiments.distillation.redistill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
 
 
@@ -47,7 +47,7 @@ def train(config):
         step = 0
 
     while True:
-        trainer.train_epoch()
+        trainer.run()
         if step % 25 == 0:
             trainer.evaluate()
 

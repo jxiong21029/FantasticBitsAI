@@ -11,7 +11,9 @@ from ppo import PPOConfig, PPOTrainer
 def sample_rollout():
     rng = np.random.default_rng(42 * 0xBEEF)
     torch.manual_seed(rng.integers(2**32))
-    trainer = PPOTrainer(VonMisesAgents(), PPOConfig(rollout_steps=128))
+    trainer = PPOTrainer(
+        VonMisesAgents(), PPOConfig(minibatch_size=64, rollout_steps=128)
+    )
     trainer.collect_rollout()
     return trainer.rollout
 

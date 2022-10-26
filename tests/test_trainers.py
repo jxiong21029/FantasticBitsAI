@@ -14,13 +14,17 @@ def test_step():
 
 
 def test_short_train():
-    trainer = PPOTrainer(GaussianAgents(), PPOConfig(rollout_steps=128, epochs=2))
-    trainer.train_epoch()
+    trainer = PPOTrainer(
+        GaussianAgents(), PPOConfig(rollout_steps=128, minibatch_size=64, epochs=2)
+    )
+    trainer.run()
     trainer.evaluate(num_episodes=2)
 
 
 def test_vectorized_evaluate():
-    trainer = PPOTrainer(VonMisesAgents(), PPOConfig(rollout_steps=128))
+    trainer = PPOTrainer(
+        VonMisesAgents(), PPOConfig(rollout_steps=128, minibatch_size=64)
+    )
     trainer.vectorized_evaluate(num_episodes=10)
 
 
@@ -41,6 +45,7 @@ def test_shared_reward_symmetry():
                     reward_shaping_snaffle_goal_dist=False,
                 ),
                 rollout_steps=128,
+                minibatch_size=64,
             ),
         )
 

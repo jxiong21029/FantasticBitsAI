@@ -32,7 +32,7 @@ for beta in betas:
         axes[1][0].plot(results[beta], c=color_refs[beta].get_color(), label=str(beta))
 
 axes[0][1].set_title("Noisy Exponential Convergence")
-dataset = [1 - 0.5**i + random.random() / 15 for i in range(length)]
+dataset = [1 - 0.8 ** (30 - i) + random.random() / 15 for i in range(length)]
 axes[0][1].plot(dataset)
 
 results = defaultdict(list)

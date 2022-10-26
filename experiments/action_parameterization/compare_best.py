@@ -36,7 +36,7 @@ def train(config):
             )
 
         for _ in tqdm.trange(100):
-            trainer.train_epoch()
+            trainer.run()
         trainer.evaluate()
         torch.save(
             trainer.agents.state_dict(),

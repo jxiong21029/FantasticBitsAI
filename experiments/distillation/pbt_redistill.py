@@ -8,27 +8,38 @@ from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.sample import Domain
 
-from architectures import VonMisesAgents
-from experiments.distillation.direct_distill import DirectDistillationTrainer
+from experiments.distillation.redistill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
+from utils import PROJECT_DIR
+
+SMOKE_TEST = False
 
 
 def train(config):
-    agents = VonMisesAgents(num_layers=2, d_model=64, nhead=2, dim_feedforward=128)
-    trainer = DirectDistillationTrainer(
+    agents = ReDistillAgents(
+        num_layers=2, d_model=64, nhead=2, dim_feedforward=128, share_parameters=True
+    )
+
+    trainer = JointReDistillTrainer(
         agents,
-        ckpt_filename="../../../../bc_agents.pth",
-        beta_kl=config["beta_kl"],
+        demo_filename=os.path.join(PROJECT_DIR, "data/basic_demo.pickle"),
+        beta_bc=config["beta_bc"],
         ppo_config=PPOConfig(
             lr=config["lr"],
-            gae_lambda=0.975,
-            minibatch_size=config["minibatch_size"],
-            weight_decay=config["weight_decay"],
-            epochs=config["epochs"],
+            gae_lambda=0.95,
+            weight_decay=1e-4,
+            rollout_steps=128 if SMOKE_TEST else 4096,
+            minibatch_size=64 if SMOKE_TEST else 512,
+            epochs=3,
+            entropy_reg=config["entropy_reg"],
+            ppo_clip_coeff=config["ppo_clip_coeff"],
+            value_loss_wt=config["beta_vf"],
+            grad_clipping=10.0,
             env_kwargs={
                 "reward_shaping_snaffle_goal_dist": True,
-                "reward_own_goal": 3.0,
-                "reward_teammate_goal": 0.0,
+                "reward_own_goal": 2,
+                "reward_teammate_goal": 2,
+                "reward_opponent_goal": -2,
             },
         ),
     )
@@ -42,12 +53,16 @@ def train(config):
             trainer.optim.load_state_dict(ckpt_data["optim_state_dict"])
     else:
         step = 0
+        agents.load_state_dict(
+            torch.load(os.path.join(PROJECT_DIR, "data/pretrained.pth"))
+        )
 
     while True:
         trainer.run()
-        if step % 25 == 0:
-            trainer.evaluate()
+        for p in agents.parameters():
+            assert not p.isnan().any()
 
+        if step % 50 == 49 or (SMOKE_TEST and step % 3 == 2):
             os.makedirs("checkpoint", exist_ok=True)
             torch.save(
                 {
@@ -58,17 +73,19 @@ def train(config):
                 "checkpoint/state.pt",
             )
             new_checkpoint = air.Checkpoint.from_directory("checkpoint")
+
+            trainer.vectorized_evaluate(10 if SMOKE_TEST else 200)
             trainer.logger.air_report(checkpoint=new_checkpoint)
         step += 1
 
 
 def main():
     param_space = {
-        "lr": tune.loguniform(10**-4, 10**-2.5),
-        "minibatch_size": [256, 512, 1024],
-        "weight_decay": tune.loguniform(10**-6, 10**-3),
-        "epochs": [1, 2, 3],
-        "beta_kl": tune.loguniform(10**-2.5, 1),
+        "lr": tune.loguniform(10**-4, 10**-3),
+        "beta_bc": tune.loguniform(10**-2.5, 1),
+        "beta_vf": tune.loguniform(1e-1, 1e1),
+        "entropy_reg": tune.loguniform(10**-6, 10**-4),
+        "ppo_clip_coeff": tune.uniform(0.02, 0.2),
     }
 
     resample_prob = 0.25
@@ -100,7 +117,7 @@ def main():
         time_attr="training_iteration",
         metric="eval_goals_scored_mean",
         mode="max",
-        perturbation_interval=2,
+        perturbation_interval=1,
         hyperparam_mutations=param_space,
     )
     pbt._get_new_config = custom_get_new_config
@@ -110,12 +127,11 @@ def main():
         tune_config=tune.TuneConfig(
             scheduler=pbt,
             num_samples=-1,
-            max_concurrent_trials=8,
-            time_budget_s=3600 * 12,
+            max_concurrent_trials=12,
         ),
         run_config=air.RunConfig(
-            name="direct_distill_pbt",
-            local_dir="../ray_results",
+            name="limit_test",
+            local_dir="ray_results",
         ),
     )
     tuner.fit()

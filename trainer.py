@@ -19,7 +19,7 @@ class Trainer(ABC):
         pass
 
     @abstractmethod
-    def train_epoch(self):
+    def run(self):
         pass
 
     def evaluate(self, num_episodes=50):

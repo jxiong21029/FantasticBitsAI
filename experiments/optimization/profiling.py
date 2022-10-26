@@ -6,8 +6,8 @@ from utils import profileit
 @profileit
 def train():
     trainer = PPOTrainer(VonMisesAgents(num_layers=2, d_model=64, dim_feedforward=128))
-    trainer.train_epoch()
-    trainer.train_epoch()
+    trainer.run()
+    trainer.run()
 
 
 @profileit

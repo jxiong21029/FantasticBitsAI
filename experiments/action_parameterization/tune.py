@@ -38,7 +38,7 @@ def train(config):
                 grad_clipping=None,
             )
         for i in range(101):
-            trainer.train_epoch()
+            trainer.run()
             # if i % 20 == 0:
             #     trainer.evaluate()
             #     tune.report(

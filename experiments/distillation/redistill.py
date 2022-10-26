@@ -30,6 +30,7 @@ class ReDistillAgents(VonMisesAgents):
             self.move_head_2.weight *= 0.01
             self.throw_head_2.weight *= 0.01
 
+    # TODO: integrate augment / device changes
     def policy_forward_2(self, rollout, batch_idx):
         z = self.policy_encoder(rollout["obs"], batch_idx)  # S x B x 32
         distrs = []
@@ -85,8 +86,8 @@ class PhasicReDistillTrainer(PPOTrainer):
             weight_decay=ppo_config.weight_decay,
         )
 
-    def train_epoch(self):
-        super().train_epoch()
+    def run(self):
+        super().run()
         phase2_logger = Logger()
 
         frozen_agents = copy.deepcopy(self.agents)
@@ -270,7 +271,7 @@ class JointReDistillTrainer(PPOTrainer):
             if logger is not None:
                 logger.step()
 
-    def train_epoch(self):
+    def run(self):
         self.collect_rollout()
         self.agents.train()
 
@@ -341,7 +342,7 @@ def main():
         ),
     )
     for i in tqdm.trange(201):
-        trainer.train_epoch()
+        trainer.run()
         if i % 20 == 0:
             trainer.evaluate()
             trainer.logger.generate_plots()

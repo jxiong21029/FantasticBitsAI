@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 from ray import air, tune
 
-from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
+from experiments.distillation.redistill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
 from tuning import IntervalHalvingSearch, log_halving_search
 from utils import Logger

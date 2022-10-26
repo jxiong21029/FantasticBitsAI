@@ -3,7 +3,7 @@ import os
 import numpy as np
 import ray
 
-from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
+from experiments.distillation.redistill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
 from utils import Logger
 

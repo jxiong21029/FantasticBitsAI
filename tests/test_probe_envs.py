@@ -27,8 +27,8 @@ def test_probe_1():
     trainer = PPOTrainer(
         agents,
         config=PPOConfig(
-            rollout_steps=256,
-            minibatch_size=256,
+            rollout_steps=512,
+            minibatch_size=512,
             epochs=2,
         ),
     )
@@ -36,12 +36,12 @@ def test_probe_1():
     trainer.env_obs = [env.reset() for env in trainer.envs]
     assert trainer.bufs[0].max_size == 256 / 8
 
-    trainer.train_epoch()
+    trainer.run()
     assert np.isclose(trainer.reward_stats.mean(), 6, rtol=0.1).all()
     assert np.isclose(trainer.reward_stats.std(), 2, rtol=0.1).all()
 
     assert trainer.rollout["ret"].shape == (256, 2)
-    assert np.isclose(trainer.rollout["ret"].mean(), 3, rtol=0.1).all()
+    assert np.isclose(trainer.rollout["ret"].mean(), 3, rtol=0.2).all()
 
 
 class ProbeEnv3(FantasticBits):
@@ -74,7 +74,7 @@ def test_probe_3():
     trainer.envs = [ProbeEnv3() for _ in range(len(trainer.envs))]
     trainer.env_obs = [env.reset() for env in trainer.envs]
 
-    trainer.train_epoch()
+    trainer.run()
     assert np.isclose(trainer.reward_stats.std(), 0.5, rtol=0.1)
     assert np.isclose(trainer.rollout["ret"].mean(), 2, rtol=0.1)
 
@@ -113,7 +113,7 @@ def test_probe_4():
 
     results = np.zeros(15)
     for i in range(15):
-        trainer.train_epoch()
+        trainer.run()
         results[i] = (
             (trainer.rollout["act"]["target"][:, :, 1] > 0).to(torch.float32).mean()
         )
@@ -158,6 +158,6 @@ def test_probe_6():
 
     results = np.zeros(25)
     for i in range(25):
-        trainer.train_epoch()
+        trainer.run()
         results[i] = trainer.reward_stats.mean()
     assert results[-10:].mean() > results[:10].mean()

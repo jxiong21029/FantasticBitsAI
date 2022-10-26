@@ -8,7 +8,7 @@ from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.sample import Domain
 
-from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
+from experiments.distillation.redistill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
 
 
@@ -49,7 +49,7 @@ def train(config):
         trainer.agents.load_state_dict(torch.load("../../data/pretrained_agents.pth"))
 
     while True:
-        trainer.train_epoch()
+        trainer.run()
         if step % 25 == 24:
             os.makedirs("checkpoint", exist_ok=True)
             torch.save(

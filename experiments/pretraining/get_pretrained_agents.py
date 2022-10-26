@@ -1,7 +1,8 @@
 import torch
 
-from experiments.distillation.repr_distill import JointReDistillTrainer, ReDistillAgents
+from experiments.distillation.redistill import JointReDistillTrainer, ReDistillAgents
 from ppo import PPOConfig
+from utils import Logger
 
 agents = ReDistillAgents(
     num_layers=2, d_model=64, nhead=2, dim_feedforward=128, share_parameters=True
@@ -10,7 +11,6 @@ agents = ReDistillAgents(
 trainer = JointReDistillTrainer(
     agents,
     demo_filename="../../data/basic_demo.pickle",
-    beta_bc=0.3,
     ppo_config=PPOConfig(
         env_kwargs={
             "reward_shaping_snaffle_goal_dist": True,
@@ -21,14 +21,20 @@ trainer = JointReDistillTrainer(
     ),
 )
 
-trainer.pretrain_policy(lr=10**-2.5, weight_decay=10**-2.5, verbose=True)
-# TODO: replace placeholders
-trainer.pretrain_value(lr=-1, weight_decay=-1, beta_kl=-1, verbose=True)
+pi_logger = Logger()
+trainer.pretrain_policy(
+    lr=10**-3, weight_decay=10**-4, logger=pi_logger, verbose=True
+)
+print("BC convergence:", pi_logger.estimate_convergence("pretrain_loss_bc_mean"))
+
+vf_logger = Logger()
+trainer.pretrain_value(
+    lr=10**-3, weight_decay=10**-3, beta_kl=1, logger=vf_logger, verbose=True
+)
+print("VF convergence:", vf_logger.estimate_convergence("pretrain_loss_vf_mean"))
+print("VF+KL convergence:", vf_logger.estimate_convergence("pretrain_loss_total_mean"))
 
 torch.save(
-    {
-        "agents": trainer.agents.state_dict(),
-        "optim": trainer.optim.state_dict(),
-    },
-    "../../data/pretrained_agents.pth",
+    trainer.agents.state_dict(),
+    "../../data/pretrained.pth",
 )
