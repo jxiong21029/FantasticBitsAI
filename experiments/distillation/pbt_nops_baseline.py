@@ -8,7 +8,7 @@ from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 from ray.tune.search.sample import Domain
 
-from experiments.distillation.redistill import ReDistillAgents
+from architectures import VonMisesAgents
 from ppo import PPOConfig, PPOTrainer
 from utils import PROJECT_DIR
 
@@ -16,8 +16,8 @@ SMOKE_TEST = False
 
 
 def train(config):
-    agents = ReDistillAgents(
-        num_layers=2, d_model=64, nhead=2, dim_feedforward=128, share_parameters=True
+    agents = VonMisesAgents(
+        num_layers=2, d_model=64, nhead=2, dim_feedforward=128, share_parameters=False
     )
 
     trainer = PPOTrainer(
@@ -31,7 +31,6 @@ def train(config):
             epochs=3,
             entropy_reg=config["entropy_reg"],
             ppo_clip_coeff=config["ppo_clip_coeff"],
-            value_loss_wt=config["beta_vf"],
             grad_clipping=10.0,
             env_kwargs={
                 "reward_shaping_snaffle_goal_dist": True,
@@ -52,7 +51,7 @@ def train(config):
     else:
         step = 0
         agents.load_state_dict(
-            torch.load(os.path.join(PROJECT_DIR, "data/pretrained.pth"))
+            torch.load(os.path.join(PROJECT_DIR, "data/pretrained_nops.pth"))
         )
 
     while True:
@@ -80,8 +79,6 @@ def train(config):
 def main():
     param_space = {
         "lr": tune.loguniform(10**-4, 10**-3),
-        "beta_bc": tune.loguniform(10**-2.5, 1),
-        "beta_vf": tune.loguniform(1e-1, 1e1),
         "entropy_reg": tune.loguniform(10**-6, 10**-4),
         "ppo_clip_coeff": tune.uniform(0.02, 0.2),
     }
@@ -128,7 +125,7 @@ def main():
             max_concurrent_trials=12,
         ),
         run_config=air.RunConfig(
-            name="limit_test_baseline",
+            name="limit_test_nops",
             local_dir="../ray_results",
         ),
     )

@@ -56,9 +56,10 @@ class RunningMoments:
 
 
 class Logger:
-    def __init__(self):
+    def __init__(self, logging_prefix=None):
         self.cumulative_data = defaultdict(list)
         self.epoch_data = defaultdict(list)
+        self.prefix = logging_prefix
 
         self.cleared_previous = False
 
@@ -67,14 +68,17 @@ class Logger:
             self.epoch_data[k].append(v)
 
     def step(self):
+        pre = "" if self.prefix is None else self.prefix
         for k, v in self.epoch_data.items():
             if len(v) == 1:
                 self.cumulative_data[k].append(v[0])
             elif isinstance(v[0], bool):
-                self.cumulative_data[k + "_prop"].append(np.mean(v, dtype=np.float32))
+                self.cumulative_data[pre + k + "_prop"].append(
+                    np.mean(v, dtype=np.float32)
+                )
             else:
-                self.cumulative_data[k + "_mean"].append(np.mean(v))
-                self.cumulative_data[k + "_std"].append(np.std(v))
+                self.cumulative_data[pre + k + "_mean"].append(np.mean(v))
+                self.cumulative_data[pre + k + "_std"].append(np.std(v))
 
         self.epoch_data.clear()
 

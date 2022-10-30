@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -335,6 +336,77 @@ class PPOTrainer(Trainer):
             entropy=total_entropy,
         )
         return total_loss
+
+    def pretrain_value(
+        self,
+        lr,
+        weight_decay,
+        epochs=50,
+        sample_reuse=3,
+        beta_kl=None,
+        logger=None,
+        verbose=False,
+    ):
+        temp_optim = torch.optim.Adam(
+            self.agents.parameters(), lr=lr, weight_decay=weight_decay
+        )
+
+        idx = np.arange(self.rollout_steps)
+
+        frozen_agents = None if beta_kl is None else copy.deepcopy(self.agents)
+
+        if verbose:
+            itr = tqdm.trange(epochs)
+        else:
+            itr = range(epochs)
+        for _ in itr:
+            self.collect_rollout()
+
+            for _ in range(sample_reuse):
+                self.rng.shuffle(idx)
+
+                for i in range(idx.shape[0] // self.minibatch_size):
+                    batch_idx = idx[
+                        i * self.minibatch_size : (i + 1) * self.minibatch_size
+                    ]
+                    v_pred = self.agents.value_forward(self.rollout, batch_idx)
+                    loss_v = ((v_pred - self.rollout["ret"][batch_idx]) ** 2).mean()
+
+                    # can be used if params are shared, to preserve policy
+                    if beta_kl is not None:
+                        with torch.no_grad():
+                            _, distrs_old = frozen_agents.policy_forward(
+                                self.rollout, batch_idx
+                            )
+                        _, distrs_curr = self.agents.policy_forward(
+                            self.rollout, batch_idx
+                        )
+
+                        loss_kl = sum(
+                            distributions.kl_divergence(
+                                distrs_old[i], distrs_curr[i]
+                            ).mean()
+                            for i in range(2)
+                        )
+                        total_loss = loss_v + beta_kl * loss_kl
+
+                        temp_optim.zero_grad(set_to_none=True)
+                        total_loss.backward()
+                        temp_optim.step()
+                        if logger is not None:
+                            logger.log(
+                                pretrain_loss_vf=loss_v.item(),
+                                pretrain_loss_kl=loss_kl.item(),
+                                pretrain_loss_total=total_loss.item(),
+                            )
+                    else:
+                        temp_optim.zero_grad(set_to_none=True)
+                        loss_v.backward()
+                        temp_optim.step()
+                        if logger is not None:
+                            logger.log(pretrain_loss_vf=loss_v.item())
+            if logger is not None:
+                logger.step()
 
     def run(self):
         self.collect_rollout()

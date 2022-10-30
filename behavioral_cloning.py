@@ -91,8 +91,9 @@ class BCTrainer(Trainer):
         lr,
         minibatch_size,
         weight_decay,
-        grad_clipping,
+        grad_clipping=None,
         env_kwargs=None,
+        logger=None,
         seed=None,
     ):
         super().__init__(env_kwargs=env_kwargs, seed=seed)
@@ -105,19 +106,19 @@ class BCTrainer(Trainer):
 
         with open(demo_filename, "rb") as f:
             demo_obs, demo_actions = pickle.load(f)
-        self.rollout = {
+        self.demo = {
             "obs": {k: torch.tensor(v) for k, v in demo_obs.items()},
             "act": {k: torch.tensor(v) for k, v in demo_actions.items()},
         }
         for i in range(2):
-            self.rollout["act"]["target"] /= torch.norm(
-                self.rollout["act"]["target"], dim=2, keepdim=True
+            self.demo["act"]["target"] /= torch.norm(
+                self.demo["act"]["target"], dim=2, keepdim=True
             )
 
         self.demo_sz = demo_obs["global"].shape[0]
 
         self.rng = np.random.default_rng(seed=seed)
-        self.logger = Logger()
+        self.logger = Logger() if logger is None else logger
 
     @property
     def agents(self):
@@ -131,9 +132,11 @@ class BCTrainer(Trainer):
 
         for i in range(idx.shape[0] // self.minibatch_size):
             batch_idx = idx[i * self.minibatch_size : (i + 1) * self.minibatch_size]
-            logp, _ = self.agents.policy_forward(self.rollout, batch_idx)
+            logp, _ = self.agents.policy_forward(self.demo, batch_idx)
 
             loss = -logp.mean()
+            if custom_loss := self.custom_loss(loss, self.demo, batch_idx):
+                loss = custom_loss
             self.optim.zero_grad(set_to_none=True)
             loss.backward()
 
@@ -152,6 +155,9 @@ class BCTrainer(Trainer):
             self.optim.step()
 
         self.logger.step()
+
+    def custom_loss(self, loss, demo, batch_idx):
+        pass
 
 
 def main():
